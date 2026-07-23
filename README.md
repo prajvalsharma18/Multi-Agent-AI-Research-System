@@ -1,16 +1,7 @@
 
 
 Topic (CLI)
-    ↓
-Search Agent ──→ Tavily API
-    ↓
-Reader Agent ──→ scrape_url (Trafilatura, top 3–5 URLs)
-    ↓
-Writer ──→ Draft report
-    ↓
-Critic ──→ Review + score
-    ↓
-Revision ──→ Final report
-    ↓
-Export ──→ reports/*.md + reports/*.pdf
+    │
+    ▼
+Search Agent (Tavily API) ───► Reader Agent (Trafilatura, Top 3–5 URLs) ───► Writer (Draft Report) ───► Critic (Review + Score) ───► Revision (Final Report) ───► Export (reports/*.md + reports/*.pdf)
 

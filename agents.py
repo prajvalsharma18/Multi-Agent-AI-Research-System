@@ -105,23 +105,35 @@ WRITER_SYSTEM_PROMPT = f"""You are an expert research analyst and technical writ
 Rules:
 - Use ONLY the reader summary provided — no other sources
 - Only cite sources with quality score >= {MIN_SOURCE_SCORE}
-- Never invent facts
+- Never invent facts or URLs
+- Copy every URL EXACTLY as it appears in the research summary — do not modify, shorten, or replace
+- In the Sources section, use clickable Markdown links:
+  - [Source Title](EXACT_URL) — Quality Score: X/10
 - Write professionally with clear structure"""
 
 REVISION_SYSTEM_PROMPT = f"""You are an expert research analyst revising a report based on critic feedback.
 
 Rules:
-- Fix every issue raised by the critic
+- Fix only genuine issues raised by the critic — do not rewrite content that already passes
 - Keep only sources with quality score >= {MIN_SOURCE_SCORE}
 - Do not invent new facts — use only the original research summary
-- Improve clarity, structure, and completeness"""
+- Preserve exact URLs from the research summary — never modify or invent URLs
+- Sources must use clickable Markdown: [Source Title](EXACT_URL) — Quality Score: X/10
+- Improve clarity, structure, and completeness only where the critic flagged problems"""
 
-CRITIC_SYSTEM_PROMPT = """You are a senior research reviewer. Be efficient.
+CRITIC_SYSTEM_PROMPT = """You are a senior research reviewer. Be accurate and conservative.
 
-If the report has Introduction, Key Findings (3+), Conclusion, Sources with URLs:
-- Score 8–10 and Verdict: approve as-is unless there is a clear factual gap.
+Before evaluating:
+1. Read the ENTIRE report carefully — evaluate only what is visibly present.
+2. Count Key Findings explicitly (each numbered/bulleted finding under Key Findings).
+3. Check Sources for URLs — count plain https:// links AND Markdown links [Title](URL).
+4. Never claim a section, finding, or URL is missing when it is clearly present.
+5. Never invent content that is not in the report.
 
-Only request revision for missing sections, weak citations, or factual issues."""
+Revision policy (conservative):
+- Set Revision Required: NO when Key Findings Check, Sources Check, and Evidence Check all PASS.
+- Set Revision Required: YES only for genuine substantive problems (missing sections, <3 findings, no URLs, factual gaps).
+- Do not request revision for style preferences when requirements are met."""
 
 SUMMARIZER_SYSTEM_PROMPT = """You synthesize scraped webpage content into brief structured research notes.
 
@@ -144,8 +156,21 @@ def get_revision_score_threshold() -> int:
     return int(os.getenv("REVISION_SCORE_THRESHOLD", "8"))
 
 
+def _parse_revision_required(feedback: str) -> bool | None:
+    """Parse structured Revision Required field. None if absent."""
+    match = re.search(r"Revision Required:\s*(YES|NO)\b", feedback, re.IGNORECASE)
+    if match:
+        return match.group(1).upper() == "YES"
+    return None
+
+
 def critic_needs_revision(feedback: str) -> bool:
-    """Return True when the Critic identifies issues requiring Revision."""
+    """Return True only when the Critic genuinely requires Revision."""
+    explicit = _parse_revision_required(feedback)
+    if explicit is not None:
+        return explicit
+
+    # Fallback when structured field is missing (legacy / malformed output)
     score_match = re.search(r"Score:\s*(\d+)/10", feedback)
     score = int(score_match.group(1)) if score_match else 0
     if score >= get_revision_score_threshold():
@@ -158,12 +183,22 @@ def critic_needs_revision(feedback: str) -> bool:
         "ready to publish",
         "approve as-is",
         "approved as-is",
+        "revision required: no",
     )
     if any(phrase in lower for phrase in skip_phrases):
         return False
 
+    # Structured PASS checks — if all pass, skip revision
+    checks = re.findall(
+        r"(Key Findings Check|Sources Check|Evidence Check):\s*(PASS|FAIL)",
+        feedback,
+        re.IGNORECASE,
+    )
+    if checks and all(result.upper() == "PASS" for _, result in checks):
+        return False
+
     improve_section = re.search(
-        r"areas to improve:\s*(.+?)(?:\nverdict:|\Z)",
+        r"areas to improve:\s*(.+?)(?:\nrevision required:|\nverdict:|\Z)",
         feedback,
         re.IGNORECASE | re.DOTALL,
     )
@@ -173,7 +208,7 @@ def critic_needs_revision(feedback: str) -> bool:
             for line in improve_section.group(1).splitlines()
             if line.strip().startswith("-")
         ]
-        trivial = {"-", "- none", "- n/a", "- none."}
+        trivial = {"-", "- none", "- n/a", "- none.", "- no issues", "- no issues."}
         if bullets and all(b.lower() in trivial for b in bullets):
             return False
 
@@ -224,7 +259,9 @@ Write a concise report (keep each section brief):
 # Conclusion
 
 # Sources
-(List URLs from the research summary with quality scores)
+(List every source using EXACT URLs from the research summary as clickable Markdown links)
+- [Source Title](EXACT_URL) — Quality Score: X/10
+(Do not modify URLs — copy them exactly from the research summary)
 """,
     ),
 ])
@@ -245,8 +282,9 @@ Draft Report:
 Critic Feedback:
 {feedback}
 
-Write the IMPROVED final report addressing all critic feedback.
+Write the IMPROVED final report addressing only genuine critic issues.
 Use the same format: Introduction, Key Findings, Conclusion, Sources.
+Preserve exact URLs as [Source Title](EXACT_URL) — Quality Score: X/10.
 """,
     ),
 ])
@@ -269,23 +307,39 @@ _critic_prompt = ChatPromptTemplate.from_messages([
     (
         "human",
         """
-Review the following report.
+Review the following report carefully. Inspect what is actually present before judging.
 
 Report:
 {report}
 
-Return exactly:
+Step 1 — Count Key Findings under the Key Findings section (each distinct finding).
+Step 2 — Check Sources for URLs (plain https:// links AND Markdown [Title](URL) links).
+Step 3 — Verify Introduction, Key Findings (3+), Conclusion, and Sources sections exist.
+
+Return exactly this structure:
 
 Score: X/10
+
+Key Findings Check: PASS/FAIL
+Sources Check: PASS/FAIL
+Evidence Check: PASS/FAIL
 
 Strengths:
 - ...
 
 Areas to Improve:
-- ... (use "- None" if no issues)
+- ... (use "- None" if no genuine issues)
+
+Revision Required: YES/NO
 
 Verdict:
-(approve as-is OR list required fixes)
+(approve as-is OR list only genuine substantive fixes needed)
+
+Rules:
+- If you count 3+ Key Findings, set Key Findings Check: PASS.
+- If Sources contains any URL (plain or Markdown link), set Sources Check: PASS.
+- Set Revision Required: NO when all three checks PASS unless there is a clear factual error.
+- Never claim missing content that is visibly in the report.
 """,
     ),
 ])

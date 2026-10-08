@@ -1,11 +1,11 @@
 # Core LLM + LangChain ecosystem
-langchain>=0.2.0
-langchain-core>=0.2.0
+langchain>=1.0.0
+langchain-core>=1.0.0
 langchain-community>=0.2.0
-langchain-google-genai>=2.0.0
+langchain-openai>=1.0.0
 
-# Google Gemini
-google-generativeai>=0.8.0
+# Official OpenAI Python SDK (used by langchain-openai)
+openai>=1.0.0
 
 # Tavily Search Tool
 tavily-python>=0.3.0

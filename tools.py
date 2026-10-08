@@ -13,7 +13,7 @@ from tavily import TavilyClient
 
 from cache import get_cached_scrape, get_cached_search, set_cached_scrape, set_cached_search
 from metrics import get_metrics
-from source_scoring import MIN_SOURCE_SCORE, score_label, score_url
+from source_scoring import MIN_SOURCE_SCORE, canonicalize_url, domain_for_url, score_label, score_source, score_url
 
 load_dotenv()
 
@@ -35,10 +35,10 @@ def dedupe_urls(urls: list[str]) -> list[str]:
     seen: set[str] = set()
     unique: list[str] = []
     for url in urls:
-        normalized = url.strip().rstrip("/")
+        normalized = canonicalize_url(url)
         if not normalized.startswith("http"):
             continue
-        key = normalized.lower()
+        key = normalized
         if key not in seen:
             seen.add(key)
             unique.append(url.strip())
@@ -57,17 +57,16 @@ def _parse_search_results(text: str) -> list[dict]:
         title = _field(block, "Title") or "N/A"
         url = _field(block, "URL") or ""
         snippet = _field(block, "Snippet") or ""
-        score_str = _field(block, "Quality Score")
+        published_date = _field(block, "Published Date")
 
         if not url.startswith("http"):
             continue
 
-        score = int(score_str.split("/")[0]) if score_str else score_url(url)
         sources.append({
             "title": title,
             "url": url,
             "snippet": snippet,
-            "score": score,
+            "published_date": published_date,
         })
 
     return sources
@@ -80,16 +79,24 @@ def _field(block: str, name: str) -> str | None:
 
 def _format_tavily_results(results: dict) -> str:
     output = []
-    for i, r in enumerate(results.get("results", []), start=1):
-        url = r.get("url", "N/A")
+    records = results.get("results", []) if isinstance(results, dict) else []
+    if not isinstance(records, list):
+        return ""
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        url = r.get("url") or "N/A"
+        if not isinstance(url, str):
+            url = "N/A"
         score = score_url(url) if url.startswith("http") else 0
-        snippet = (r.get("content") or "").strip()[:300]
+        snippet = str(r.get("content") or "").strip()[:300]
 
         output.append(
-            f"""Result {i}
-Title: {r.get('title', 'N/A')}
+            f"""Result {len(output) + 1}
+Title: {r.get('title') or 'N/A'}
 URL: {url}
-Quality Score: {score}/10 ({score_label(score)})
+Published Date: {r.get('published_date') or 'Unknown'}
+Authority Score: {score}/10 ({score_label(score)})
 Snippet:
 {snippet}"""
         )
@@ -205,11 +212,17 @@ def scrape_urls_parallel(urls: list[str], max_workers: int = MAX_PARALLEL_SCRAPE
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_scrape_single_url, url): url for url in url_list}
         for future in as_completed(futures):
-            results.append(future.result())
+            url = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append(
+                    f"Title: N/A\nURL: {url}\nContent:\nCould not scrape URL.\nReason: {exc}"
+                )
     return results
 
 
-def rank_sources_from_search(search_text: str, min_score: int = MIN_SOURCE_SCORE) -> list[dict]:
+def rank_sources_from_search(search_text: str, min_score: int = MIN_SOURCE_SCORE, query: str = "") -> list[dict]:
     sources = _parse_search_results(search_text)
     if not sources:
         urls = re.findall(r"https?://[^\s\)\]>\"']+", search_text)
@@ -225,5 +238,22 @@ def rank_sources_from_search(search_text: str, min_score: int = MIN_SOURCE_SCORE
                     "score": score_url(url),
                 })
 
-    sources.sort(key=lambda s: s["score"], reverse=True)
-    return [s for s in sources if s["score"] >= min_score]
+    unique = {}
+    for source in sources:
+        key = canonicalize_url(source["url"])
+        if key and key not in unique:
+            source["url"] = key
+            unique[key] = source
+    ranked = []
+    seen_domains = set()
+    for source in sorted(unique.values(), key=lambda s: score_url(s["url"]), reverse=True):
+        domain = domain_for_url(source["url"])
+        score, breakdown = score_source(source, query, domain not in seen_domains)
+        authority_score = score_url(source["url"])
+        source.update(domain=domain, score=score, source_score=score, authority_score=authority_score, source_score_breakdown=breakdown, query_used=query)
+        # Authority is the acceptance floor. The composite score ranks sources
+        # without accidentally excluding independent pages from the same domain.
+        if authority_score >= min_score:
+            ranked.append(source)
+            seen_domains.add(domain)
+    return sorted(ranked, key=lambda item: item["score"], reverse=True)

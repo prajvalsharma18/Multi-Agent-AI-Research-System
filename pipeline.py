@@ -14,7 +14,7 @@ def run_research_pipeline(topic: str, *, resume: bool = True) -> dict:
     """Run the LangGraph multi-agent research pipeline."""
     from cache import clear_checkpoint, load_initial_state
     from graph import SEPARATOR, research_graph
-    from gemini_retry import GeminiQuotaError
+    from llm_retry import LLMRequestError
     from metrics import get_metrics, reset_metrics
 
     topic = topic.strip()
@@ -22,7 +22,11 @@ def run_research_pipeline(topic: str, *, resume: bool = True) -> dict:
         raise ValueError("Research topic cannot be empty.")
 
     reset_metrics()
-    initial = load_initial_state(topic) if resume else {"topic": topic}
+    if resume:
+        initial = load_initial_state(topic)
+    else:
+        clear_checkpoint(topic)
+        initial = {"topic": topic}
 
     print(f"\n{SEPARATOR}")
     print(f"Topic: {topic}")
@@ -42,7 +46,7 @@ def run_research_pipeline(topic: str, *, resume: bool = True) -> dict:
 
         print(f"\n{get_metrics().summary()}")
         return state
-    except GeminiQuotaError as e:
+    except LLMRequestError as e:
         print(f"\nPipeline paused at stage: {e.step or 'unknown'}")
         print(str(e))
         print("\nRerun the same topic to resume from the last successful stage.")
@@ -54,7 +58,7 @@ def run_research_pipeline(topic: str, *, resume: bool = True) -> dict:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Advanced Multi-Agent Research Assistant (LangGraph + Gemini + Tavily)",
+        description="Advanced Multi-Agent Research Assistant (LangGraph + OpenAI + Tavily)",
         epilog='Example: python pipeline.py "India space mission 2026"',
     )
     parser.add_argument(
@@ -85,7 +89,7 @@ if __name__ == "__main__":
 
     if args.clear_checkpoint:
         from cache import clear_checkpoint
-        clear_checkpoint(topic)
+        clear_checkpoint(topic)
         print(f"Cleared checkpoint for: {topic}")
 
     outcome = run_research_pipeline(topic, resume=not args.fresh)

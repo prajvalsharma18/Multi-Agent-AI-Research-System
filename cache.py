@@ -105,7 +105,7 @@ def set_node_cache(stage: str, topic: str, data: dict) -> None:
 
 
 # ---------------------------------------------------------------------
-# Pipeline checkpoint (resume after 429)
+# Pipeline checkpoint (resume after API errors)
 # ---------------------------------------------------------------------
 
 
@@ -120,7 +120,19 @@ def get_checkpoint(topic: str) -> dict | None:
 def merge_checkpoint(topic: str, partial: dict) -> None:
     if not cache_enabled():
         return
+    from agents import get_active_model
+    from research_quality import RESEARCH_DATA_VERSION, RESEARCH_PROMPT_VERSION
     existing = get_checkpoint(topic) or {"topic": topic.strip()}
+    if existing.get("_research_version") != RESEARCH_DATA_VERSION:
+        existing = {"topic": topic.strip()}
+    models_used = set(existing.get("_llm_models", []))
+    if existing.get("_llm_model"):
+        models_used.add(existing["_llm_model"])
+    models_used.add(get_active_model())
+    existing["_llm_models"] = sorted(models_used)
+    existing["_research_version"] = RESEARCH_DATA_VERSION
+    existing["_research_prompt_version"] = RESEARCH_PROMPT_VERSION
+    existing.pop("_llm_model", None)
     existing.update(partial)
     set_checkpoint(topic, existing)
 
@@ -138,40 +150,24 @@ def clear_checkpoint(topic: str) -> None:
         path.unlink()
 
 
-USAGE_FILE = CACHE_ROOT / "gemini_daily_usage.json"
-
-
-def get_daily_gemini_limit() -> int:
-    return int(os.getenv("GEMINI_DAILY_LIMIT", "500"))
-
-
-def record_gemini_request() -> int:
-    """Increment today's Gemini request counter; return new total."""
-    from datetime import date
-
-    today = date.today().isoformat()
-    data = _read_json(USAGE_FILE) or {}
-    if data.get("date") != today:
-        data = {"date": today, "count": 0}
-    data["count"] = int(data.get("count", 0)) + 1
-    _write_json(USAGE_FILE, data)
-    return data["count"]
-
-
-def get_daily_gemini_count() -> int:
-    from datetime import date
-
-    data = _read_json(USAGE_FILE)
-    if not data or data.get("date") != date.today().isoformat():
-        return 0
-    return int(data.get("count", 0))
-
-
 def load_initial_state(topic: str) -> dict:
     """Merge topic with any saved checkpoint for resumable runs."""
     topic = topic.strip()
     state: dict = {"topic": topic}
     checkpoint = get_checkpoint(topic)
     if checkpoint:
-        state.update(checkpoint)
+        from research_quality import RESEARCH_DATA_VERSION, RESEARCH_PROMPT_VERSION
+        from agents import get_model_candidates
+        candidates = set(get_model_candidates())
+        models_used = set(checkpoint.get("_llm_models", []))
+        if checkpoint.get("_llm_model"):
+            models_used.add(checkpoint["_llm_model"])
+        if (
+            checkpoint.get("_research_version") == RESEARCH_DATA_VERSION
+            and checkpoint.get("_research_prompt_version") == RESEARCH_PROMPT_VERSION
+            and models_used and models_used.issubset(candidates)
+        ):
+            state.update(checkpoint)
+        else:
+            clear_checkpoint(topic)
     return state

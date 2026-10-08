@@ -1,4 +1,4 @@
-"""Gemini-powered agents and chains for the research pipeline."""
+"""OpenAI-powered agents and chains for the research pipeline."""
 
 from __future__ import annotations
 
@@ -10,42 +10,34 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
 from source_scoring import MIN_SOURCE_SCORE
 from tools import scrape_url, scrape_urls_batch, web_search
 
 load_dotenv()
 
-# Free-tier defaults (user quotas): gemini-3.5-flash-lite → 15 RPM / 500 RPD
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
-FALLBACK_GEMINI_MODELS = (
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-)
+DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 
 _active_model: str | None = None
 
 
-def _require_google_api_key() -> str:
-    key = os.getenv("GOOGLE_API_KEY")
+def _require_openai_api_key() -> str:
+    key = os.getenv("OPENAI_API_KEY")
     if not key:
         raise ValueError(
-            "GOOGLE_API_KEY not found. Add it to a .env file in the project root."
+            "OPENAI_API_KEY not found. Add it to a .env file in the project root."
         )
     return key
 
 
 def get_model_candidates() -> list[str]:
-    """Preferred model first, then fallbacks (deduplicated)."""
-    preferred = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for model in (preferred, *FALLBACK_GEMINI_MODELS):
-        if model not in seen:
-            seen.add(model)
-            ordered.append(model)
-    return ordered
+    """Configured primary model and optional explicitly configured fallback."""
+    models = [os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)]
+    fallback = os.getenv("OPENAI_FALLBACK_MODEL", "").strip()
+    if fallback and fallback not in models:
+        models.append(fallback)
+    return models
 
 
 def set_active_model(model: str) -> None:
@@ -54,7 +46,7 @@ def set_active_model(model: str) -> None:
 
 
 def get_active_model() -> str:
-    return _active_model or os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+    return _active_model or os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
 
 
 def clear_agent_caches() -> None:
@@ -68,24 +60,25 @@ def clear_agent_caches() -> None:
 
 
 @lru_cache(maxsize=1)
-def get_llm() -> ChatGoogleGenerativeAI:
-    """Return a shared Gemini LLM instance (lazy-loaded)."""
-    return ChatGoogleGenerativeAI(
+def get_llm() -> ChatOpenAI:
+    """Return the shared OpenAI chat model (backed by the official SDK)."""
+    return ChatOpenAI(
         model=get_active_model(),
-        temperature=0,
-        google_api_key=_require_google_api_key(),
-        max_retries=1,
+        api_key=_require_openai_api_key(),
+        timeout=float(os.getenv("OPENAI_REQUEST_TIMEOUT", "60")),
+        max_retries=0,
+        reasoning_effort="none",
     )
 
 
-def get_search_llm() -> ChatGoogleGenerativeAI:
-    """Gemini with forced web_search tool calling for the search agent."""
-    return get_llm().bind_tools([web_search], tool_choice="any")
+def get_search_llm() -> ChatOpenAI:
+    """OpenAI model with forced Tavily tool calling for the search agent."""
+    return get_llm().bind_tools([web_search], tool_choice="required")
 
 
-def get_reader_llm() -> ChatGoogleGenerativeAI:
-    """Gemini with forced batch scrape tool calling for the reader agent."""
-    return get_llm().bind_tools([scrape_urls_batch], tool_choice="any")
+def get_reader_llm() -> ChatOpenAI:
+    """OpenAI model with forced batch scrape tool calling for the reader agent."""
+    return get_llm().bind_tools([scrape_urls_batch], tool_choice="required")
 
 
 # ---------------------------------------------------------------------
@@ -97,28 +90,28 @@ The tool returns formatted results — return them as-is. Do not add extra comme
 
 READER_SYSTEM_PROMPT = f"""You are a research reader agent. Your ONLY tool is scrape_urls_batch.
 
-Call scrape_urls_batch ONCE with a comma-separated list of the top URLs (Quality Score >= {MIN_SOURCE_SCORE}).
+Call scrape_urls_batch ONCE with the exact URLs supplied by the user. Python has already applied the authority threshold ({MIN_SOURCE_SCORE}/10) and ranked the accepted sources.
 The tool returns scraped page text — return it as-is. Do not summarize."""
 
 WRITER_SYSTEM_PROMPT = f"""You are an expert research analyst and technical writer.
 
 Rules:
-- Use ONLY the reader summary provided — no other sources
-- Only cite sources with quality score >= {MIN_SOURCE_SCORE}
+- Use ONLY validated claim/evidence context provided — no other sources
+- Use only accepted sources in the validated research context. Their composite ranking score is descriptive, not a second acceptance threshold.
 - Never invent facts or URLs
-- Copy every URL EXACTLY as it appears in the research summary — do not modify, shorten, or replace
-- In the Sources section, use clickable Markdown links:
-  - [Source Title](EXACT_URL) — Quality Score: X/10
+- Mark factual findings with the supplied [C#] claim IDs. Do not invent IDs or URLs.
+- Do not write URLs, Markdown links, or source entries; cite claims only with [C#] markers.
+- Every material factual sentence must end with one or more supplied [C#] markers.
 - Write professionally with clear structure"""
 
 REVISION_SYSTEM_PROMPT = f"""You are an expert research analyst revising a report based on critic feedback.
 
 Rules:
 - Fix only genuine issues raised by the critic — do not rewrite content that already passes
-- Keep only sources with quality score >= {MIN_SOURCE_SCORE}
-- Do not invent new facts — use only the original research summary
-- Preserve exact URLs from the research summary — never modify or invent URLs
-- Sources must use clickable Markdown: [Source Title](EXACT_URL) — Quality Score: X/10
+- Use only accepted sources in the validated research context. Their composite ranking score is descriptive, not a second acceptance threshold.
+- Do not invent facts — use only validated claim/evidence context
+- Keep supplied claim markers [C#] on factual statements; never invent claim IDs
+- Do not create or alter source URLs; citations are materialized from validated mappings
 - Improve clarity, structure, and completeness only where the critic flagged problems"""
 
 CRITIC_SYSTEM_PROMPT = """You are a senior research reviewer. Be accurate and conservative.
@@ -130,22 +123,11 @@ Before evaluating:
 4. Never claim a section, finding, or URL is missing when it is clearly present.
 5. Never invent content that is not in the report.
 
-Revision policy (conservative):
-- Set Revision Required: NO when Key Findings Check, Sources Check, and Evidence Check all PASS.
-- Set Revision Required: YES only for genuine substantive problems (missing sections, <3 findings, no URLs, factual gaps).
-- Do not request revision for style preferences when requirements are met."""
+Assess claim support, citation mapping, source quality, independent domain diversity, contradictions, completeness, then prose. A single lower-authority domain reused for claims is a substantive evidence defect; one genuinely authoritative source by itself is not.
+Revision Required must be YES for important unsupported factual claims, missing or wrong citations, fabricated URLs, or material evidence gaps. Prose quality cannot compensate for weak evidence."""
 
-SUMMARIZER_SYSTEM_PROMPT = """You synthesize scraped webpage content into brief structured research notes.
-
-For EACH source, output:
-
-### Source N: [Title]
-URL: ...
-Quality Score: .../10
-Key Points:
-- (2–3 bullets max)
-
-Use ONLY the scraped content. Be concise."""
+SUMMARIZER_SYSTEM_PROMPT = """Extract source-grounded research evidence from the scraped pages.
+Return ONLY valid JSON with keys evidence and claims. Evidence objects have source_url (copied exactly), excerpt (verbatim text from page), supporting_text, relevance_score and confidence from 0 to 1, and optional location. Claims have claim_text, evidence_indices (zero-based indices into evidence), confidence and importance from 0 to 1. Use only verifiable excerpts; do not invent URLs or facts. Include unsupported claims only with an empty evidence_indices list. Keep the evidence concise."""
 
 # ---------------------------------------------------------------------
 # Agents (tool-calling)
@@ -217,7 +199,7 @@ def critic_needs_revision(feedback: str) -> bool:
 
 @lru_cache(maxsize=1)
 def build_search_agent():
-    """Search agent: Tavily web_search via Gemini tool calling."""
+    """Search agent: Tavily web_search via OpenAI tool calling."""
     return create_agent(
         model=get_search_llm(),
         tools=[web_search],
@@ -254,14 +236,12 @@ Write a concise report (keep each section brief):
 # Introduction
 
 # Key Findings
-(3 findings, each backed by a source)
+(findings must be supported and marked with supplied [C#] claim IDs)
 
 # Conclusion
 
 # Sources
-(List every source using EXACT URLs from the research summary as clickable Markdown links)
-- [Source Title](EXACT_URL) — Quality Score: X/10
-(Do not modify URLs — copy them exactly from the research summary)
+(Do not add links or entries. Python materializes sources from the [C#] markers.)
 """,
     ),
 ])
@@ -284,7 +264,7 @@ Critic Feedback:
 
 Write the IMPROVED final report addressing only genuine critic issues.
 Use the same format: Introduction, Key Findings, Conclusion, Sources.
-Preserve exact URLs as [Source Title](EXACT_URL) — Quality Score: X/10.
+Preserve valid [C#] claim markers. Python will materialize citations from validated mappings.
 """,
     ),
 ])

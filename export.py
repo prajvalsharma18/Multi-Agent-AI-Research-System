@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import markdown
+import reportlab
 from xhtml2pdf import pisa
 
 OUTPUT_DIR = Path(__file__).parent / "reports"
@@ -36,10 +37,19 @@ def save_report(
     md_path.write_text(md_content, encoding="utf-8")
 
     html = markdown.markdown(md_content, extensions=["tables", "fenced_code"])
+    font_dir = Path(reportlab.__file__).parent / "fonts"
+    vera_regular = (font_dir / "Vera.ttf").as_uri()
+    vera_bold = (font_dir / "VeraBd.ttf").as_uri()
+    vera_italic = (font_dir / "VeraIt.ttf").as_uri()
+    vera_bold_italic = (font_dir / "VeraBI.ttf").as_uri()
     styled_html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-  body {{ font-family: Georgia, serif; margin: 40px; line-height: 1.6; color: #222; }}
+  @font-face {{ font-family: Vera; src: url("{vera_regular}"); }}
+  @font-face {{ font-family: Vera; src: url("{vera_bold}"); font-weight: bold; }}
+  @font-face {{ font-family: Vera; src: url("{vera_italic}"); font-style: italic; }}
+  @font-face {{ font-family: Vera; src: url("{vera_bold_italic}"); font-weight: bold; font-style: italic; }}
+  body {{ font-family: Vera, serif; margin: 40px; line-height: 1.6; color: #222; }}
   h1 {{ color: #1a1a2e; border-bottom: 2px solid #16213e; padding-bottom: 8px; }}
   h2 {{ color: #16213e; margin-top: 24px; }}
   li {{ margin-bottom: 4px; }}

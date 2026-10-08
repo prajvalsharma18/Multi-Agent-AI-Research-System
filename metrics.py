@@ -8,18 +8,25 @@ from dataclasses import dataclass, field
 
 @dataclass
 class PipelineMetrics:
-    gemini_calls: int = 0
+    openai_calls: int = 0
+    retries: int = 0
+    failures: int = 0
     cache_hits: int = 0
     cache_misses: int = 0
     scrape_calls: int = 0
-    daily_gemini_count: int = 0
-    gemini_stages: list[str] = field(default_factory=list)
+    openai_stages: list[str] = field(default_factory=list)
+    models: list[str] = field(default_factory=list)
     cache_hit_stages: list[str] = field(default_factory=list)
+    quality: dict = field(default_factory=dict)
+
+    def set_quality(self, **values) -> None:
+        self.quality.update(values)
     _start_time: float = field(default_factory=time.perf_counter)
 
-    def log_gemini_call(self, stage: str) -> None:
-        self.gemini_calls += 1
-        self.gemini_stages.append(stage)
+    def log_openai_call(self, stage: str, model: str) -> None:
+        self.openai_calls += 1
+        self.openai_stages.append(stage)
+        self.models.append(model)
 
     def log_cache_hit(self, stage: str) -> None:
         self.cache_hits += 1
@@ -36,17 +43,16 @@ class PipelineMetrics:
         return time.perf_counter() - self._start_time
 
     def summary(self) -> str:
-        from cache import get_daily_gemini_count, get_daily_gemini_limit
-
-        stages = ", ".join(self.gemini_stages) or "none"
+        stages = ", ".join(self.openai_stages) or "none"
+        models = ", ".join(dict.fromkeys(self.models)) or "none"
         hits = ", ".join(self.cache_hit_stages) or "none"
-        daily = self.daily_gemini_count or get_daily_gemini_count()
-        limit = get_daily_gemini_limit()
         return (
-            f"Gemini calls this run: {self.gemini_calls} [{stages}] | "
-            f"Today: {daily}/{limit} RPD | "
+            f"OpenAI calls this run: {self.openai_calls} [{stages}] | "
+            f"Models: {models} | "
+            f"Retries: {self.retries} | Failures: {self.failures} | "
             f"Cache hits: {self.cache_hits} [{hits}] | "
             f"Scrapes: {self.scrape_calls} | "
+            f"Quality: {self.quality} | "
             f"Time: {self.elapsed_seconds:.1f}s"
         )
 

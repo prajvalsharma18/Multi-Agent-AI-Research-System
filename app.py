@@ -21,7 +21,7 @@ PIPELINE_STEPS = [
     ("search", "Search Agent", "Tavily web search + source ranking"),
     ("reader", "Reader Agent", "Batch scrape URLs (Trafilatura) + summarize"),
     ("writer", "Report Writer", "Draft structured research report"),
-    ("critic", "Research Critic", "Gemini score & review the draft"),
+    ("critic", "Research Critic", "OpenAI score & review the draft"),
     ("revision", "Writer Revision", "Reflection loop → final report"),
     ("export", "Export", "Save Markdown + PDF"),
 ]
@@ -42,8 +42,8 @@ STEP_KEYS = {
 
 def _api_keys_ok() -> tuple[bool, list[str]]:
     missing = []
-    if not os.getenv("GOOGLE_API_KEY"):
-        missing.append("GOOGLE_API_KEY")
+    if not os.getenv("OPENAI_API_KEY"):
+        missing.append("OPENAI_API_KEY")
     if not os.getenv("TAVILY_API_KEY"):
         missing.append("TAVILY_API_KEY")
     return len(missing) == 0, missing
@@ -102,7 +102,7 @@ def _render_pipeline_progress(completed: list[str], active: str | None) -> None:
 
 def _render_ranked_sources(sources: list[dict]) -> None:
     if not sources:
-        st.info("No sources passed the quality threshold (score ≥ 7).")
+        st.info("No sources passed the authority threshold (7/10).")
         return
 
     for i, src in enumerate(sources, start=1):
@@ -132,7 +132,7 @@ def _render_step_output(node_id: str, state: dict) -> None:
     if node_id == "search":
         sources = state.get("ranked_sources") or []
         st.subheader("Ranked sources")
-        st.caption(f"{len(sources)} source(s) with quality score ≥ 7")
+        st.caption(f"{len(sources)} source(s) passed the authority threshold (7/10); ordered by composite score")
         _render_ranked_sources(sources)
 
         with st.expander("Raw search output", expanded=False):
@@ -141,6 +141,14 @@ def _render_step_output(node_id: str, state: dict) -> None:
     elif node_id == "reader":
         summary = state.get("reader_summary") or "—"
         st.markdown(summary)
+        quality = state.get("quality_metrics") or {}
+        sources = quality.get("sources") or {}
+        evidence = quality.get("evidence") or {}
+        if quality:
+            st.caption(
+                f"Evidence: {evidence.get('supported_claims', 0)}/{evidence.get('total_claims', 0)} claims supported · "
+                f"Sources: {sources.get('unique_domains', 0)} domains / {sources.get('unique_sources', 0)} URLs"
+            )
 
     elif node_id == "writer":
         report = state.get("report") or "—"
@@ -149,6 +157,9 @@ def _render_step_output(node_id: str, state: dict) -> None:
     elif node_id == "critic":
         feedback = state.get("feedback") or "—"
         st.markdown(feedback)
+        critique = state.get("critique") or {}
+        if critique:
+            st.metric("Research quality score", f"{critique.get('overall_score', 0)}/10")
 
     elif node_id == "revision":
         final = state.get("final_report") or "—"
@@ -189,8 +200,8 @@ def _render_step_output(node_id: str, state: dict) -> None:
 def run_pipeline(topic: str, *, resume: bool = True) -> None:
     """Stream LangGraph nodes and update the UI after each step."""
     from cache import load_initial_state
-    from graph import research_graph
-    from gemini_retry import GeminiQuotaError
+    from graph import MAX_REVISION_ITERATIONS, research_graph
+    from llm_retry import LLMRequestError
     from metrics import get_metrics, reset_metrics
 
     reset_metrics()
@@ -209,7 +220,9 @@ def run_pipeline(topic: str, *, resume: bool = True) -> None:
     live = st.empty()
 
     try:
-        total = len(PIPELINE_STEPS)
+        # The critic can run after each revision, so reserve progress for the
+        # bounded revision loop as well as the linear path.
+        total = len(PIPELINE_STEPS) + MAX_REVISION_ITERATIONS + 1
         for i, event in enumerate(research_graph.stream(initial), start=1):
             node_id, partial = next(iter(event.items()))
             st.session_state.pipeline_state.update(partial or {})
@@ -217,13 +230,21 @@ def run_pipeline(topic: str, *, resume: bool = True) -> None:
                 dict.fromkeys([*st.session_state.completed_steps, node_id])
             )
 
-            next_idx = min(i, total - 1)
-            st.session_state.active_step = (
-                PIPELINE_STEPS[next_idx][0] if i < total else None
-            )
+            if node_id == "revision":
+                next_step = "critic"
+            elif node_id == "critic":
+                can_revise = (
+                    st.session_state.pipeline_state.get("needs_revision", False)
+                    and st.session_state.pipeline_state.get("revision_count", 0) < MAX_REVISION_ITERATIONS
+                )
+                next_step = "revision" if can_revise else "export"
+            else:
+                order = [step[0] for step in PIPELINE_STEPS]
+                next_step = order[order.index(node_id) + 1] if node_id in order and order.index(node_id) + 1 < len(order) else None
+            st.session_state.active_step = next_step
 
             label = next((lbl for nid, lbl, _ in PIPELINE_STEPS if nid == node_id), node_id)
-            progress.progress(i / total, text=f"Completed: {label}")
+            progress.progress(min(i / total, 1.0), text=f"Completed: {label}")
             status.info(f"Finished **{label}** ({i}/{total})")
 
             with live.container():
@@ -237,13 +258,8 @@ def run_pipeline(topic: str, *, resume: bool = True) -> None:
         progress.progress(1.0, text="Pipeline complete")
         status.success("Research pipeline finished.")
 
-    except GeminiQuotaError as exc:
-        st.session_state.error = (
-            f"Gemini quota/rate limit at stage **{exc.step or 'unknown'}**. "
-            f"Cached stages are saved — click **Resume** to continue later. "
-            f"Recommended model: `gemini-3.5-flash-lite`. "
-            f"Details: https://ai.google.dev/gemini-api/docs/rate-limits"
-        )
+    except LLMRequestError as exc:
+        st.session_state.error = f"OpenAI request failed at stage **{exc.step or 'unknown'}**. Cached stages are saved — click **Resume** to continue later. Details: {exc}"
         st.session_state.metrics_summary = get_metrics().summary()
         status.error(st.session_state.error)
     except Exception as exc:
@@ -273,7 +289,7 @@ st.markdown(
 
 with st.sidebar:
     st.title("Research Pipeline")
-    st.caption("LangGraph · Gemini · Tavily · Trafilatura")
+    st.caption("LangGraph · OpenAI · Tavily · Trafilatura")
 
     st.markdown("### Flow")
     for i, (_, label, desc) in enumerate(PIPELINE_STEPS, start=1):
@@ -292,7 +308,7 @@ with st.sidebar:
         | Social media | 2–3 |
         """
     )
-    st.caption("Only sources with score ≥ 7 are scraped and cited.")
+    st.caption("Only sources with authority ≥ 7/10 are scraped and cited; composite scores rank those accepted sources.")
 
     st.divider()
     st.markdown("### Caching")

@@ -1,0 +1,75 @@
+from research_models import Claim
+from research_quality import (calculate_domain_diversity, materialize_citations,
+    parse_documents, parse_extraction, quality_gate, validate_extraction)
+from source_scoring import canonicalize_url, domain_for_url, score_source
+
+
+def test_url_normalization_and_registrable_domain():
+    assert canonicalize_url("HTTPS://WWW.Example.com/a/?utm_source=x#part") == "https://example.com/a"
+    assert domain_for_url("https://docs.redis.io/guide") == "redis.io"
+    assert domain_for_url("https://www.gov.uk/page") == "gov.uk"
+    assert canonicalize_url("javascript:bad") == ""
+
+
+def test_source_scoring_breakdown_and_diversity_bonus():
+    source = {"url": "https://redis.io/docs", "title": "Redis cache latency", "snippet": "Redis caching reduces latency"}
+    total, parts = score_source(source, "Redis cache latency", True)
+    second, repeated = score_source(source, "Redis cache latency", False)
+    assert parts["authority"] >= 5 and parts["relevance"] > 0
+    assert parts["diversity"] == 10 and total > second
+    assert set(parts) == {"authority", "relevance", "recency", "evidence_quality", "diversity", "total"}
+
+
+def test_document_evidence_traceability_and_claim_support():
+    scraped = "Title: Redis guide\nURL: https://redis.io/docs\nContent:\nRead-through caching reduces database load."
+    docs = parse_documents(scraped)
+    raw = '{"evidence":[{"source_url":"https://redis.io/docs","excerpt":"Read-through   caching reduces database load.","supporting_text":"reduces backend requests","relevance_score":0.9,"confidence":0.8},{"source_url":"https://fake.invalid","excerpt":"made up","supporting_text":"x"},{"source_url":"https://redis.io/docs","excerpt":"not present","supporting_text":"x"}],"claims":[{"claim_text":"It reduces load.","evidence_indices":[0],"confidence":0.7},{"claim_text":"It is always faster.","evidence_indices":[1],"confidence":0.8},{"claim_text":"unsupported","evidence_indices":[]}]} '
+    evidence, claims, notes, stats = validate_extraction("Redis caching", docs, parse_extraction(raw))
+    assert len(evidence) == 1 and stats["rejected"] == 2
+    assert claims[0].supported and claims[0].source_urls == ["https://redis.io/docs"]
+    assert not claims[1].supported and claims[1].confidence == 0
+    assert len(notes) == 3
+
+
+def test_diversity_distinguishes_single_authority_and_low_authority_reuse():
+    high = [{"url": "https://who.int/a", "score": 8.5, "authority_score": 10}]
+    low = [{"url": "https://medium.com/a", "score": 5}, {"url": "https://medium.com/b", "score": 5}]
+    assert calculate_domain_diversity(high)["classification"] == "single_authoritative_source"
+    metrics = calculate_domain_diversity(low)
+    assert metrics["classification"] == "single_domain_reuse" and metrics["diversity_ratio"] == .5
+
+
+def test_citation_materialization_and_quality_gate():
+    claim = Claim(claim_id="C1", claim_text="Redis reduces repeated reads", evidence_ids=["E1"], source_urls=["https://redis.io/docs"], confidence=.8)
+    sources = [{"url": "https://redis.io/docs", "title": "Redis docs", "score": 9}]
+    report, citation_map, metrics = materialize_citations(
+        "Finding [C1].\n\n# Sources\n\n- [Forged label](https://redis.io/docs)", [claim], sources
+    )
+    assert "[Redis docs](https://redis.io/docs)" in report
+    assert "[Forged label]" not in report and "[unmapped citation removed]" not in report
+    assert report.count("# Sources") == 1
+    assert metrics["citation_coverage"] == 1 and citation_map["C1"]
+    missing, _, missing_metrics = materialize_citations("Finding with no marker.", [claim], sources)
+    assert missing.startswith("Finding with no marker.") and missing_metrics["citation_coverage"] == 0
+    assert quality_gate({"classification": "single_low_authority_source", "unique_domains": 1, "total_sources": 1}, {"total_claims": 1, "evidence_coverage": .5}, missing_metrics)["revision_required"]
+    _, _, ungrounded = materialize_citations("Fact [Redis docs](https://redis.io/docs).", [claim], sources)
+    assert ungrounded["invalid_citations"] == 1 and ungrounded["citation_coverage"] == 0
+    bare, _, bare_metrics = materialize_citations("Invented URL https://fake.example/path", [claim], sources)
+    assert "https://fake.example/path" not in bare
+    assert bare_metrics["invalid_citations"] == 1
+
+
+def test_adjacent_claim_markers_deduplicate_shared_inline_source():
+    claims = [
+        Claim(claim_id=claim_id, claim_text="Supported claim", evidence_ids=["E1"],
+              source_urls=["https://redis.io/docs"], confidence=.9)
+        for claim_id in ("C1", "C2")
+    ]
+    sources = [{"url": "https://redis.io/docs", "title": "Redis docs", "score": 9}]
+
+    report, citation_map, metrics = materialize_citations("Conclusion [C1] [C2].", claims, sources)
+
+    assert report.count("[Redis docs](https://redis.io/docs)") == 1
+    assert set(citation_map) == {"C1", "C2"}
+    assert metrics["citation_coverage"] == 1
+

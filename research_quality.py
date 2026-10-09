@@ -210,7 +210,11 @@ def materialize_citations(
 ) -> tuple[str, dict[str, list[str]], dict[str, Any]]:
     """Replace [C1] markers with links from validated claim/source mappings."""
     claim_by_id = {claim.claim_id: claim for claim in claims}
-    source_by_url = {canonicalize_url(item.get("url", "")): item for item in sources}
+    source_by_url = {
+        normalized: item
+        for item in sources
+        if (normalized := canonicalize_url(item.get("url", "")))
+    }
     cited_claims: set[str] = set()
     citation_map: dict[str, list[str]] = {}
     invalid = 0
@@ -227,10 +231,10 @@ def materialize_citations(
     ).strip()
     direct_links = re.findall(r"\[[^\]]+\]\(https?://[^)]+\)(?:\s*\([^)]*/10\))?", raw_report)
     invalid += len(direct_links)
-    raw_report = re.sub(r"\[[^\]]+\]\(https?://[^)]+\)(?:\s*\([^)]*/10\))?", "[unmapped citation removed]", raw_report)
+    raw_report = re.sub(r"\[[^\]]+\]\(https?://[^)]+\)(?:\s*\([^)]*/10\))?", "", raw_report)
     bare_urls = re.findall(r"(?<!\()https?://[^\s<>\])]+", raw_report)
     invalid += len(bare_urls)
-    raw_report = re.sub(r"(?<!\()https?://[^\s<>\])]+", "[unmapped citation removed]", raw_report)
+    raw_report = re.sub(r"(?<!\()https?://[^\s<>\])]+", "", raw_report)
 
     # Combine whitespace-adjacent claim markers before resolving them. This
     # lets the existing URL de-duplication avoid repeating shared sources.
@@ -256,15 +260,20 @@ def materialize_citations(
                 continue
             cited_claims.add(claim_id)
             for url in claim.source_urls:
-                source = source_by_url.get(canonicalize_url(url))
+                normalized_url = canonicalize_url(url)
+                source = source_by_url.get(normalized_url) if normalized_url else None
                 if not source:
                     invalid += 1
                     continue
+                validated_url = canonicalize_url(source.get("url", ""))
+                if not validated_url:
+                    invalid += 1
+                    continue
                 score = source.get("score", source.get("source_score", 0))
-                links.append(f"[{source.get('title') or 'Source'}]({url}) ({score}/10)")
+                links.append(f"[{source.get('title') or 'Source'}]({validated_url}) ({score}/10)")
                 citation_map.setdefault(claim_id, [])
-                if url not in citation_map[claim_id]:
-                    citation_map[claim_id].append(url)
+                if validated_url not in citation_map[claim_id]:
+                    citation_map[claim_id].append(validated_url)
         return "; ".join(dict.fromkeys(links)) if links else "[citation unavailable]"
 
     output = re.sub(marker, replace, raw_report)
@@ -282,12 +291,16 @@ def materialize_citations(
         if domain_for_url(url)
     )
     referenced_urls = {canonicalize_url(url) for urls in citation_map.values() for url in urls}
-    available_urls = {canonicalize_url(item.get("url", "")) for item in sources}
+    available_urls = {
+        normalized
+        for item in sources
+        if (normalized := canonicalize_url(item.get("url", "")))
+    }
     source_lines = []
     for url in dict.fromkeys(url for urls in citation_map.values() for url in urls):
         source = source_by_url.get(canonicalize_url(url), {})
         source_lines.append(
-            f"- [{source.get('title') or 'Source'}]({url}) â€” Quality Score: "
+            f"- [{source.get('title') or 'Source'}]({url}) — Quality Score: "
             f"{source.get('score', source.get('source_score', 0))}/10"
         )
     output = output.rstrip() + "\n\n# Sources\n\n" + ("\n".join(source_lines) if source_lines else "No validated sources were cited.") + "\n"

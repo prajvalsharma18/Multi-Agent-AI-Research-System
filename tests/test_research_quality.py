@@ -46,13 +46,19 @@ def test_citation_materialization_and_quality_gate():
         "Finding [C1].\n\n# Sources\n\n- [Forged label](https://redis.io/docs)", [claim], sources
     )
     assert "[Redis docs](https://redis.io/docs)" in report
+    assert "— Quality Score:" in report
+    assert "â€”" not in report
     assert "[Forged label]" not in report and "[unmapped citation removed]" not in report
     assert report.count("# Sources") == 1
     assert metrics["citation_coverage"] == 1 and citation_map["C1"]
     missing, _, missing_metrics = materialize_citations("Finding with no marker.", [claim], sources)
     assert missing.startswith("Finding with no marker.") and missing_metrics["citation_coverage"] == 0
     assert quality_gate({"classification": "single_low_authority_source", "unique_domains": 1, "total_sources": 1}, {"total_claims": 1, "evidence_coverage": .5}, missing_metrics)["revision_required"]
-    _, _, ungrounded = materialize_citations("Fact [Redis docs](https://redis.io/docs).", [claim], sources)
+    ungrounded_report, _, ungrounded = materialize_citations(
+        "Fact [Redis docs](https://redis.io/docs).", [claim], sources
+    )
+    assert "https://redis.io/docs" not in ungrounded_report
+    assert "[unmapped citation removed]" not in ungrounded_report
     assert ungrounded["invalid_citations"] == 1 and ungrounded["citation_coverage"] == 0
     bare, _, bare_metrics = materialize_citations("Invented URL https://fake.example/path", [claim], sources)
     assert "https://fake.example/path" not in bare
@@ -68,8 +74,87 @@ def test_adjacent_claim_markers_deduplicate_shared_inline_source():
     sources = [{"url": "https://redis.io/docs", "title": "Redis docs", "score": 9}]
 
     report, citation_map, metrics = materialize_citations("Conclusion [C1] [C2].", claims, sources)
+    inline_report, bibliography = report.split("# Sources", maxsplit=1)
 
-    assert report.count("[Redis docs](https://redis.io/docs)") == 1
+    assert inline_report.count("[Redis docs](https://redis.io/docs)") == 1
+    assert bibliography.count("[Redis docs](https://redis.io/docs)") == 1
     assert set(citation_map) == {"C1", "C2"}
     assert metrics["citation_coverage"] == 1
 
+
+def test_three_adjacent_claim_markers_keep_distinct_validated_sources():
+    shared_url = "https://redis.io/docs"
+    other_url = "https://docs.python.org/guide"
+    claims = [
+        Claim(claim_id="C1", claim_text="First", evidence_ids=["E1"], source_urls=[shared_url], confidence=.9),
+        Claim(claim_id="C2", claim_text="Second", evidence_ids=["E2"], source_urls=[shared_url], confidence=.9),
+        Claim(claim_id="C3", claim_text="Third", evidence_ids=["E3"], source_urls=[other_url], confidence=.9),
+    ]
+    sources = [
+        {"url": shared_url, "title": "Redis docs", "score": 9},
+        {"url": other_url, "title": "Python docs", "score": 9},
+    ]
+
+    report, citation_map, metrics = materialize_citations("Conclusion [C1][C2][C3].", claims, sources)
+    inline_report, bibliography = report.split("# Sources", maxsplit=1)
+
+    assert inline_report.count("[Redis docs](https://redis.io/docs)") == 1
+    assert inline_report.count("[Python docs](https://docs.python.org/guide)") == 1
+    assert bibliography.count("[Redis docs](https://redis.io/docs)") == 1
+    assert bibliography.count("[Python docs](https://docs.python.org/guide)") == 1
+    assert set(citation_map) == {"C1", "C2", "C3"}
+    assert metrics["citation_coverage"] == 1
+
+
+def test_separated_claims_retain_citations_with_deduplicated_bibliography():
+    url = "https://redis.io/docs"
+    claims = [
+        Claim(claim_id=claim_id, claim_text=claim_id, evidence_ids=["E1"], source_urls=[url], confidence=.9)
+        for claim_id in ("C1", "C2")
+    ]
+    sources = [{"url": url, "title": "Redis docs", "score": 9}]
+
+    report, citation_map, metrics = materialize_citations(
+        "First point [C1].\n\nAn unrelated point between citations.\n\nSecond point [C2].",
+        claims,
+        sources,
+    )
+    inline_report, bibliography = report.split("# Sources", maxsplit=1)
+
+    assert inline_report.count("[Redis docs](https://redis.io/docs)") == 2
+    assert bibliography.count("[Redis docs](https://redis.io/docs)") == 1
+    assert set(citation_map) == {"C1", "C2"}
+    assert metrics["citation_coverage"] == 1
+
+
+def test_invalid_source_url_is_never_materialized():
+    claim = Claim(
+        claim_id="C1",
+        claim_text="Unsupported URL",
+        evidence_ids=["E1"],
+        source_urls=["javascript:alert(1)"],
+        confidence=.9,
+    )
+    sources = [{"url": "javascript:alert(1)", "title": "Invalid source", "score": 9}]
+
+    report, citation_map, metrics = materialize_citations("[C1]", [claim], sources)
+
+    assert "javascript:" not in report
+    assert "[Invalid source]" not in report
+    assert citation_map == {}
+    assert metrics["invalid_citations"] == 1
+
+
+def test_empty_citation_mapping_removes_model_authored_urls():
+    report, citation_map, metrics = materialize_citations(
+        "Unmapped [Source](https://fake.example/path).",
+        [],
+        [],
+    )
+
+    assert "https://fake.example/path" not in report
+    assert "[unmapped citation removed]" not in report
+    assert citation_map == {}
+    assert metrics["citation_coverage"] == 0
+    assert metrics["invalid_citations"] == 1
+    assert "No validated sources were cited." in report

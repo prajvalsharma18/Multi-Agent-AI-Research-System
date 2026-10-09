@@ -46,6 +46,27 @@ def test_result_parser_discards_invalid_urls_and_ranks_valid_sources():
     assert results[0]["source_score_breakdown"]["authority"] == 10
 
 
+def test_search_diagnostics_classify_candidates_without_including_snippets():
+    text = ("\n" + "-" * 70 + "\n").join((
+        "Result 1\nTitle: Official\nURL: https://www.who.int/report\nSnippet:\nPrivate page excerpt",
+        "Result 2\nTitle: Unknown\nURL: https://example.com/report\nSnippet:\nAnother excerpt",
+        "Result 3\nTitle: Invalid\nURL: not-a-url\nSnippet:\nIgnored excerpt",
+    ))
+    diagnostics = {}
+
+    results = tools.rank_sources_from_search(text, query="public health", diagnostics=diagnostics)
+
+    assert [item["url"] for item in results] == ["https://who.int/report"]
+    assert diagnostics["results_returned"] == 3
+    assert diagnostics["parsed_candidates"] == 2
+    assert diagnostics["invalid_url_candidates"] == 1
+    assert diagnostics["accepted_sources"] == 1
+    assert diagnostics["source_scoring_rejections"] == 1
+    assert diagnostics["outcome"] == "sources_accepted"
+    assert all("snippet" not in item for item in diagnostics["candidate_decisions"])
+    assert diagnostics["candidate_decisions"][1]["rejection_reason"] == "authority_below_minimum"
+
+
 def test_composite_score_does_not_filter_relevant_pages_from_authoritative_domain():
     text = ("\n" + "-" * 70 + "\n").join(
         f"Title: Redis guide {n}\nURL: https://redis.io/guide/{n}\nSnippet: Redis caching read-through latency"

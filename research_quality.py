@@ -20,7 +20,7 @@ from research_models import (
 from source_scoring import canonicalize_url, domain_for_url
 
 RESEARCH_DATA_VERSION = "evidence-v2"
-RESEARCH_PROMPT_VERSION = "citations-v2"
+RESEARCH_PROMPT_VERSION = "citations-v3-recovery-routing"
 
 
 def normalize_text(text: str) -> str:
@@ -45,17 +45,44 @@ def parse_documents(scraped_text: str, source_metadata: list[dict] | None = None
         fallback = metadata_by_url.get(canonicalize_url(url), {})
         title = (title_match.group(1).strip() if title_match else "") or fallback.get("title", "N/A")
         content = content_match.group(1).strip() if content_match else ""
-        failed = not content or any(
-            marker in content.lower()
-            for marker in ("could not fetch page", "could not extract article body", "could not scrape url")
+        failure_category_match = re.search(
+            r"(?im)^Failure category:\s*([a-z0-9_]+)\.?\s*$",
+            block,
         )
+        failure_category = (
+            failure_category_match.group(1)
+            if failure_category_match else None
+        )
+        lower_content = content.lower()
+        if failure_category and failure_category.startswith("fetch_"):
+            pipeline_outcome = "fetch_failed"
+        elif failure_category and failure_category.startswith("extraction_"):
+            pipeline_outcome = "extraction_failed"
+        elif failure_category and failure_category.startswith("worker_"):
+            pipeline_outcome = "scrape_failure_unknown"
+        elif failure_category:
+            pipeline_outcome = "scrape_failed"
+        elif "could not fetch page" in lower_content:
+            pipeline_outcome = "fetch_failed"
+        elif "could not extract article body" in lower_content:
+            pipeline_outcome = "extraction_failed"
+        elif "could not scrape url" in lower_content:
+            pipeline_outcome = "scrape_failure_unknown"
+        else:
+            pipeline_outcome = "success" if content else "extraction_failed"
+        failed = pipeline_outcome != "success"
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else ""
         documents.append(Document(
             url=url,
             title=title,
             domain=domain_for_url(url),
             text="" if failed else content,
-            metadata={"source_score": fallback.get("score"), "published_date": fallback.get("published_date")},
+            metadata={
+                "source_score": fallback.get("score"),
+                "published_date": fallback.get("published_date"),
+                "pipeline_outcome": pipeline_outcome,
+                "failure_category": failure_category,
+            },
             extraction_status="failed" if failed else "success",
             word_count=len(content.split()) if not failed else 0,
             content_hash=digest,
@@ -63,32 +90,67 @@ def parse_documents(scraped_text: str, source_metadata: list[dict] | None = None
     return documents
 
 
-def parse_extraction(raw: str) -> ResearchExtraction:
+def parse_extraction(
+    raw: str,
+    diagnostics: dict[str, Any] | None = None,
+) -> ResearchExtraction:
     """Parse JSON returned by the existing summarizer chain."""
     text = (raw or "").strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    status = "parsed"
     try:
         payload = json.loads(text)
-        return ResearchExtraction.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError, TypeError):
-        return ResearchExtraction()
+        extraction = ResearchExtraction.model_validate(payload)
+    except json.JSONDecodeError:
+        status = "malformed_json"
+        extraction = ResearchExtraction()
+    except ValidationError:
+        status = "schema_invalid"
+        extraction = ResearchExtraction()
+    except TypeError:
+        status = "invalid_response_type"
+        extraction = ResearchExtraction()
+    if status == "parsed" and not extraction.evidence and not extraction.claims:
+        status = "empty_extraction"
+    if diagnostics is not None:
+        diagnostics.update({
+            "status": status,
+            "evidence_proposals": len(extraction.evidence),
+            "claim_proposals": len(extraction.claims),
+        })
+    return extraction
 
 
 def validate_extraction(
     topic: str,
     documents: list[Document],
     extraction: ResearchExtraction,
-) -> tuple[list[Evidence], list[Claim], list[ResearchNote], dict[str, int]]:
+) -> tuple[list[Evidence], list[Claim], list[ResearchNote], dict[str, Any]]:
     """Keep only evidence tied to successful documents and traceable excerpts."""
     by_url = {canonicalize_url(doc.url): doc for doc in documents if doc.extraction_status == "success"}
     evidence: list[Evidence] = []
     evidence_index_map: dict[int, str] = {}
     rejected = 0
+    rejection_reasons: Counter[str] = Counter()
     for index, proposal in enumerate(extraction.evidence):
-        document = by_url.get(canonicalize_url(proposal.source_url))
+        normalized_source_url = canonicalize_url(proposal.source_url)
+        document = by_url.get(normalized_source_url)
         excerpt = proposal.excerpt.strip()
-        if not document or not excerpt or normalize_text(excerpt) not in normalize_text(document.text):
+        if not normalized_source_url:
             rejected += 1
+            rejection_reasons["invalid_source_url"] += 1
+            continue
+        if not document:
+            rejected += 1
+            rejection_reasons["source_document_not_successfully_extracted"] += 1
+            continue
+        if not excerpt:
+            rejected += 1
+            rejection_reasons["empty_excerpt"] += 1
+            continue
+        if normalize_text(excerpt) not in normalize_text(document.text):
+            rejected += 1
+            rejection_reasons["excerpt_not_found_in_source_text"] += 1
             continue
         evidence_id = f"E{len(evidence) + 1}"
         evidence_index_map[index] = evidence_id
@@ -133,7 +195,15 @@ def validate_extraction(
             confidence=claim.confidence,
         ))
 
-    stats = {"proposals": len(extraction.evidence), "valid": len(evidence), "rejected": rejected}
+    stats = {
+        "proposals": len(extraction.evidence),
+        "valid": len(evidence),
+        "rejected": rejected,
+        "rejection_reasons": dict(rejection_reasons),
+        "claims": len(claims),
+        "supported_claims": sum(claim.supported for claim in claims),
+        "unsupported_claims": sum(not claim.supported for claim in claims),
+    }
     return evidence, claims, notes, stats
 
 
@@ -150,7 +220,7 @@ def calculate_domain_diversity(
     counts = Counter(domain for domain in domains if domain)
     total = len(sources)
     unique_domains = len(counts)
-    ratio = unique_domains / total if total else 0.0
+    ratio = unique_domains / total if total else None
     source_values = list(unique.values())
     if total == 1 and source_values:
         score = float(source_values[0].get("authority_score", source_values[0].get("source_score_breakdown", {}).get("authority", source_values[0].get("score", 0))) or 0)
@@ -163,23 +233,84 @@ def calculate_domain_diversity(
         classification = "no_sources"
 
     domain_claim_counts: Counter[str] = Counter()
+    evidence_source_urls: set[str] = set()
     for claim in claims or []:
         urls = claim.source_urls if isinstance(claim, Claim) else claim.get("source_urls", [])
+        supported = claim.supported if isinstance(claim, Claim) else bool(claim.get("evidence_ids"))
+        if supported:
+            evidence_source_urls.update(
+                normalized
+                for url in urls
+                if (normalized := canonicalize_url(url))
+            )
         for domain in {domain_for_url(url) for url in urls}:
             if domain:
                 domain_claim_counts[domain] += 1
+    source_by_url = {
+        canonicalize_url(source.get("url", "")): source
+        for source in sources
+        if canonicalize_url(source.get("url", ""))
+    }
+    evidence_sources = [
+        source_by_url[url]
+        for url in sorted(evidence_source_urls)
+        if url in source_by_url
+    ]
+    evidence_domains = {
+        source.get("domain") or domain_for_url(source.get("url", ""))
+        for source in evidence_sources
+    } - {""}
+    evidence_authority = [
+        value
+        for source in evidence_sources
+        if isinstance(
+            (value := source.get(
+                "authority_score",
+                (source.get("source_score_breakdown") or {}).get("authority"),
+            )),
+            (int, float),
+        )
+    ]
+    evidence_authority_average = (
+        round(sum(evidence_authority) / len(evidence_authority), 2)
+        if evidence_authority else None
+    )
+    evidence_source_count = len(evidence_sources)
+    evidence_domain_count = len(evidence_domains)
+    evidence_classification = (
+        "single_authoritative_source"
+        if evidence_source_count == 1 and evidence_authority_average is not None and evidence_authority_average >= 9
+        else "single_low_authority_source"
+        if evidence_source_count == 1 and evidence_authority_average is not None and evidence_authority_average < 9
+        else "diverse"
+        if evidence_domain_count > 1
+        else "single_domain_reuse"
+        if evidence_source_count
+        else "no_sources"
+    )
     return {
         "total_sources": total,
         "unique_sources": len(unique),
         "total_domains": len(domains),
         "unique_domains": unique_domains,
-        "diversity_ratio": round(ratio, 3),
-        "average_source_quality": round(sum(float(s.get("score", s.get("source_score", 0)) or 0) for s in unique.values()) / len(unique), 2) if unique else 0.0,
-        "average_authority_score": round(sum(float(s.get("authority_score", s.get("source_score_breakdown", {}).get("authority", 0)) or 0) for s in unique.values()) / len(unique), 2) if unique else 0.0,
-        "authoritative_source_ratio": round(sum(float(s.get("authority_score", s.get("source_score_breakdown", {}).get("authority", 0)) or 0) >= 9 for s in unique.values()) / len(unique), 3) if unique else 0.0,
-        "duplicate_source_ratio": round((total - len(unique)) / total, 3) if total else 0.0,
+        "diversity_ratio": round(ratio, 3) if ratio is not None else None,
+        "average_source_quality": round(sum(float(s.get("score", s.get("source_score", 0)) or 0) for s in unique.values()) / len(unique), 2) if unique else None,
+        "average_authority_score": round(sum(float(s.get("authority_score", s.get("source_score_breakdown", {}).get("authority", 0)) or 0) for s in unique.values()) / len(unique), 2) if unique else None,
+        "authoritative_source_ratio": round(sum(float(s.get("authority_score", s.get("source_score_breakdown", {}).get("authority", 0)) or 0) >= 9 for s in unique.values()) / len(unique), 3) if unique else None,
+        "duplicate_source_ratio": round((total - len(unique)) / total, 3) if total else None,
         "classification": classification,
         "repeated_domain_claims": {domain: count for domain, count in domain_claim_counts.items() if count > 1},
+        "evidence_sources": {
+            "total_sources": evidence_source_count,
+            "unique_domains": evidence_domain_count,
+            "diversity_ratio": (
+                round(evidence_domain_count / evidence_source_count, 3)
+                if evidence_source_count else None
+            ),
+            "average_authority_score": evidence_authority_average,
+            "classification": evidence_classification,
+            "urls": sorted(evidence_source_urls),
+        },
     }
 
 
@@ -283,7 +414,7 @@ def materialize_citations(
             invalid += 1
     all_claim_ids = {claim.claim_id for claim in claims}
     total = len(claims)
-    coverage = len(cited_claims) / total if total else 0.0
+    coverage = len(cited_claims) / total if total else None
     domain_use: Counter[str] = Counter(
         domain_for_url(url)
         for urls in citation_map.values()
@@ -309,7 +440,7 @@ def materialize_citations(
         "supported_claims": sum(claim.supported for claim in claims),
         "unsupported_claims": sum(not claim.supported for claim in claims),
         "claims_with_citations": len(cited_claims & all_claim_ids),
-        "citation_coverage": round(coverage, 3),
+        "citation_coverage": round(coverage, 3) if coverage is not None else None,
         "invalid_citations": invalid,
         "unused_sources": len(available_urls - referenced_urls),
         "overused_domains": {domain: count for domain, count in domain_use.items() if count > 1},
@@ -323,23 +454,45 @@ def quality_gate(
     citation_metrics: dict[str, Any],
 ) -> dict[str, Any]:
     issues: list[str] = []
+    research_gaps: list[str] = []
+    hard_failures: list[str] = []
+    evidence_sources = source_metrics.get("evidence_sources") or {}
+    gate_sources = (
+        evidence_sources
+        if evidence_sources.get("total_sources", 0)
+        else source_metrics
+    )
     if "total_claims" in evidence_metrics and evidence_metrics.get("total_claims", 0) == 0:
-        issues.append("No claims passed validated evidence extraction; report evidence is insufficient.")
+        research_gaps.append("No claims passed validated evidence extraction; report evidence is insufficient.")
     if evidence_metrics.get("total_claims", 0) and evidence_metrics.get("evidence_coverage", 0) < 1:
-        issues.append("Some claims lack validated supporting evidence.")
-    if citation_metrics.get("total_claims", 0) and citation_metrics.get("citation_coverage", 0) < 1:
-        issues.append("Not every extracted claim is cited in the report.")
-    if citation_metrics.get("invalid_citations", 0):
-        issues.append("The report contains citations not mapped to validated sources.")
-    if source_metrics.get("classification") == "single_low_authority_source":
-        issues.append("The report depends on one lower-authority source; qualify its conclusions.")
-    if source_metrics.get("unique_domains", 0) == 1 and source_metrics.get("total_sources", 0) > 1:
-        authority = source_metrics.get("average_authority_score", source_metrics.get("average_source_quality", 0))
+        research_gaps.append("Some claims lack validated supporting evidence.")
+    if gate_sources.get("total_sources", 0) and gate_sources.get("average_authority_score", 10) < 7:
+        research_gaps.append("Accepted sources do not meet the existing authority requirement.")
+    if evidence_metrics.get("total_claims", 0):
+        if "citation_coverage" not in citation_metrics:
+            hard_failures.append("Citation coverage was not measured.")
+        elif citation_metrics["citation_coverage"] < 1:
+            hard_failures.append("Not every extracted claim is cited in the report.")
+        if "invalid_citations" not in citation_metrics:
+            hard_failures.append("Citation validation metrics are incomplete.")
+        elif citation_metrics["invalid_citations"]:
+            hard_failures.append("The report contains citations not mapped to validated sources.")
+    if gate_sources.get("classification") == "single_low_authority_source":
+        research_gaps.append("The report depends on one lower-authority source; qualify its conclusions.")
+    if gate_sources.get("unique_domains", 0) == 1 and gate_sources.get("total_sources", 0) > 1:
+        authority = gate_sources.get("average_authority_score", gate_sources.get("average_source_quality", 0))
         if authority >= 9:
-            issues.append("The report relies on several pages from one domain; these do not provide independent corroboration.")
+            research_gaps.append("The report relies on several pages from one domain; these do not provide independent corroboration.")
         else:
-            issues.append("Multiple sources from one lower-authority domain do not provide independent corroboration.")
-    return {"revision_required": bool(issues), "issues": issues}
+            research_gaps.append("Multiple sources from one lower-authority domain do not provide independent corroboration.")
+    issues.extend(research_gaps)
+    issues.extend(hard_failures)
+    return {
+        "revision_required": bool(issues),
+        "issues": issues,
+        "research_gaps": list(dict.fromkeys(research_gaps)),
+        "hard_failures": list(dict.fromkeys(hard_failures)),
+    }
 
 
 def calculate_evidence_metrics(evidence: list[Evidence], claims: list[Claim], stats: dict[str, int]) -> dict[str, Any]:
@@ -352,7 +505,7 @@ def calculate_evidence_metrics(evidence: list[Evidence], claims: list[Claim], st
         "total_claims": total,
         "supported_claims": supported,
         "unsupported_claims": total - supported,
-        "evidence_coverage": round(supported / total, 3) if total else 0.0,
-        "average_claim_confidence": round(sum(c.confidence for c in claims) / total, 3) if total else 0.0,
+        "evidence_coverage": round(supported / total, 3) if total else None,
+        "average_claim_confidence": round(sum(c.confidence for c in claims) / total, 3) if total else None,
         "independently_supported_claims": sum(len({domain_for_url(u) for u in c.source_urls}) > 1 for c in claims),
     }

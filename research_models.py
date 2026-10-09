@@ -65,15 +65,19 @@ class ResearchNote(BaseModel):
 
 
 class Critique(BaseModel):
-    overall_score: float = Field(ge=0, le=10)
-    factual_accuracy: float = Field(default=0, ge=0, le=10)
-    citation_correctness: float = Field(default=0, ge=0, le=10)
-    source_quality: float = Field(default=0, ge=0, le=10)
-    source_diversity: float = Field(default=0, ge=0, le=10)
-    evidence_coverage: float = Field(default=0, ge=0, le=10)
-    completeness: float = Field(default=0, ge=0, le=10)
+    overall_score: float | None = Field(default=None, ge=0, le=10)
+    factual_accuracy: float | None = Field(default=None, ge=0, le=10)
+    citation_correctness: float | None = Field(default=None, ge=0, le=10)
+    source_quality: float | None = Field(default=None, ge=0, le=10)
+    source_diversity: float | None = Field(default=None, ge=0, le=10)
+    evidence_coverage: float | None = Field(default=None, ge=0, le=10)
+    completeness: float | None = Field(default=None, ge=0, le=10)
     contradictions: list[str] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
+    research_gaps: list[str] = Field(default_factory=list)
+    writing_issues: list[str] = Field(default_factory=list)
+    targeted_queries: list[str] = Field(default_factory=list)
+    approval: bool = False
     revision_required: bool = False
     actionable_feedback: list[str] = Field(default_factory=list)
 

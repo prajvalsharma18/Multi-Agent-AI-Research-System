@@ -22,6 +22,8 @@ def test_happy_path_runs_each_node_and_exports(monkeypatch):
     monkeypatch.setattr(graph, "export_node", node("export", {"output_paths": {"markdown": "r.md", "pdf": "r.pdf"}}))
     result = graph.build_research_graph().invoke({"topic": "test"})
     assert visited == ["search", "reader", "writer", "critic", "export"]
+    assert "research_recovery" not in visited
+    assert "revision" not in visited
     assert result["output_paths"]["pdf"] == "r.pdf"
 
 

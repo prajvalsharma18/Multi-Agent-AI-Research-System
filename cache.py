@@ -49,12 +49,16 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def get_cached_scrape(url: str) -> str | None:
+    if not cache_enabled():
+        return None
     path = SCRAPE_CACHE_DIR / f"{_hash_key(url)}.json"
     data = _read_json(path)
     return data.get("content") if data else None
 
 
 def set_cached_scrape(url: str, content: str) -> None:
+    if not cache_enabled():
+        return
     path = SCRAPE_CACHE_DIR / f"{_hash_key(url)}.json"
     _write_json(path, {"url": url, "content": content})
 
@@ -65,12 +69,16 @@ def set_cached_scrape(url: str, content: str) -> None:
 
 
 def get_cached_search(query: str) -> str | None:
+    if not cache_enabled():
+        return None
     path = SEARCH_CACHE_DIR / f"{_hash_key(query.strip().lower())}.json"
     data = _read_json(path)
     return data.get("results") if data else None
 
 
 def set_cached_search(query: str, results: str) -> None:
+    if not cache_enabled():
+        return
     path = SEARCH_CACHE_DIR / f"{_hash_key(query.strip().lower())}.json"
     _write_json(path, {"query": query, "results": results})
 

@@ -1,0 +1,207 @@
+{
+  "fixture_version": "1.0.0",
+  "scenarios": [
+    {
+      "case_id": "redis-caching",
+      "scenario": "initial_approval",
+      "simulated_gate_approved": true,
+      "recovery_attempted": false,
+      "recovery_produced_new_validated_evidence": false,
+      "termination_reason": "approved",
+      "scenario_data": {
+        "research_rounds": 0,
+        "revision_count": 0,
+        "recovery_candidate_urls": 0,
+        "recovery_duplicate_urls": 0,
+        "recovery_accepted_sources": 0,
+        "recovery_successful_fetches": 0,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 0,
+        "critic_score": 9,
+        "citation_coverage": 1.0
+      },
+      "invariant": "An initially approved state does not enter research recovery or revision."
+    },
+    {
+      "case_id": "postgresql-mongodb-tradeoffs",
+      "scenario": "recovery_enables_approval",
+      "simulated_gate_approved": true,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": true,
+      "termination_reason": "approved",
+      "scenario_data": {
+        "research_rounds": 1,
+        "revision_count": 0,
+        "recovery_candidate_urls": 3,
+        "recovery_duplicate_urls": 0,
+        "recovery_accepted_sources": 2,
+        "recovery_successful_fetches": 2,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 4,
+        "gate_failures_before_recovery": 2,
+        "gate_failures_after_recovery": 0,
+        "critic_score": 9,
+        "citation_coverage": 1.0
+      },
+      "invariant": "New validated recovery evidence and a subsequent passing gate are separate observations."
+    },
+    {
+      "case_id": "http-cache-controls",
+      "scenario": "candidates_without_new_evidence",
+      "simulated_gate_approved": false,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": false,
+      "termination_reason": "no_research_progress",
+      "scenario_data": {
+        "research_rounds": 1,
+        "recovery_candidate_urls": 2,
+        "recovery_duplicate_urls": 0,
+        "recovery_accepted_sources": 1,
+        "recovery_successful_fetches": 1,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 0
+      },
+      "invariant": "Candidates or fetched pages alone do not count as recovery evidence success."
+    },
+    {
+      "case_id": "webauthn-phishing-resistance",
+      "scenario": "duplicate_recovery_sources",
+      "simulated_gate_approved": false,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": false,
+      "termination_reason": "no_research_progress",
+      "scenario_data": {
+        "research_rounds": 1,
+        "recovery_candidate_urls": 0,
+        "recovery_duplicate_urls": 3,
+        "recovery_accepted_sources": 0,
+        "recovery_successful_fetches": 0,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 0
+      },
+      "invariant": "Canonical duplicate URLs are not additional accepted sources."
+    },
+    {
+      "case_id": "http3-performance",
+      "scenario": "recovery_fetch_failure",
+      "simulated_gate_approved": false,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": false,
+      "termination_reason": "no_research_progress",
+      "scenario_data": {
+        "research_rounds": 1,
+        "recovery_candidate_urls": 1,
+        "recovery_duplicate_urls": 0,
+        "recovery_accepted_sources": 1,
+        "recovery_successful_fetches": 0,
+        "recovery_failed_fetches": 1,
+        "recovery_evidence_added": 0
+      },
+      "invariant": "Failed fetches are reported separately and cannot create accepted evidence."
+    },
+    {
+      "case_id": "python-supported-versions",
+      "scenario": "evidence_improves_but_gate_rejects",
+      "simulated_gate_approved": false,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": true,
+      "termination_reason": "quality_requirements_unresolved",
+      "scenario_data": {
+        "research_rounds": 1,
+        "recovery_candidate_urls": 2,
+        "recovery_duplicate_urls": 1,
+        "recovery_accepted_sources": 1,
+        "recovery_successful_fetches": 1,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 2,
+        "gate_failures_before_recovery": 3,
+        "gate_failures_after_recovery": 1
+      },
+      "invariant": "New evidence is not equivalent to final approval."
+    },
+    {
+      "case_id": "cap-consistency-nuance",
+      "scenario": "recovery_round_budget_exhausted",
+      "simulated_gate_approved": false,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": false,
+      "termination_reason": "research_budget_exhausted",
+      "scenario_data": {
+        "research_rounds": 2,
+        "revision_count": 0,
+        "max_research_rounds": 2,
+        "recovery_candidate_urls": 4,
+        "recovery_duplicate_urls": 2,
+        "recovery_accepted_sources": 2,
+        "recovery_successful_fetches": 2,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 0
+      },
+      "invariant": "The research round limit terminates the loop without reporting approval."
+    },
+    {
+      "case_id": "single-domain-diversity",
+      "scenario": "remaining_budget_insufficient",
+      "simulated_gate_approved": false,
+      "recovery_attempted": false,
+      "recovery_produced_new_validated_evidence": false,
+      "termination_reason": "research_budget_exhausted",
+      "scenario_data": {
+        "research_rounds": 0,
+        "remaining_budget_available": false,
+        "recovery_candidate_urls": 0,
+        "recovery_duplicate_urls": 0,
+        "recovery_accepted_sources": 0,
+        "recovery_successful_fetches": 0,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 0
+      },
+      "invariant": "Unavailable remaining budget is not misreported as a recovery attempt."
+    },
+    {
+      "case_id": "unverifiable-proprietary-claim",
+      "scenario": "source_merge_and_id_remapping",
+      "simulated_gate_approved": false,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": true,
+      "termination_reason": "quality_requirements_unresolved",
+      "scenario_data": {
+        "research_rounds": 1,
+        "recovery_candidate_urls": 2,
+        "recovery_duplicate_urls": 0,
+        "recovery_accepted_sources": 2,
+        "recovery_successful_fetches": 2,
+        "recovery_failed_fetches": 0,
+        "recovery_evidence_added": 2,
+        "evidence_ids_before": ["E1"],
+        "evidence_ids_after": ["E1", "E2", "E3"],
+        "claim_evidence_ids_after": ["E1", "E2", "E3"],
+        "ids_unique_and_resolved": true
+      },
+      "invariant": "Merged evidence and claim references preserve stable IDs without claiming the gate passed."
+    },
+    {
+      "case_id": "idempotency-subquestions",
+      "scenario": "no_progress_preserves_last_critic",
+      "simulated_gate_approved": false,
+      "recovery_attempted": true,
+      "recovery_produced_new_validated_evidence": false,
+      "termination_reason": "no_research_progress",
+      "scenario_data": {
+        "research_rounds": 2,
+        "recovery_candidate_urls": 3,
+        "recovery_duplicate_urls": 2,
+        "recovery_accepted_sources": 1,
+        "recovery_successful_fetches": 1,
+        "recovery_failed_fetches": 1,
+        "recovery_evidence_added": 0,
+        "latest_critic_score": 8,
+        "citation_coverage": 0.67,
+        "unresolved_issues_preserved": true,
+        "quality_status": "NOT APPROVED",
+        "cumulative_counters_verified": true
+      },
+      "invariant": "No-progress termination retains measured critic/citation values and unresolved issues."
+    }
+  ]
+}

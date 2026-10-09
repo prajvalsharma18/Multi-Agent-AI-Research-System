@@ -15,8 +15,13 @@ def test_metrics_count_calls_retries_cache_and_scrapes():
     value.log_cache_hit("search")
     value.log_cache_miss("reader")
     value.log_scrape(2)
+    value.log_search(recovery=False)
+    value.log_search(recovery=True)
     assert (value.openai_calls, value.retries, value.cache_hits, value.cache_misses, value.scrape_calls) == (1, 1, 1, 1, 2)
     assert "gpt-test" in value.summary()
+    assert "Searches: 1 initial / 1 recovery" in value.summary()
+    assert "Cache/checkpoint hits: 1 [search]" in value.summary()
+    assert "Enabled-cache misses: 1" in value.summary()
 
 
 def test_reset_metrics_returns_new_zeroed_instance():

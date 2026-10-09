@@ -22,6 +22,7 @@ PIPELINE_STEPS = [
     ("reader", "Reader Agent", "Batch scrape URLs (Trafilatura) + summarize"),
     ("writer", "Report Writer", "Draft structured research report"),
     ("critic", "Research Critic", "OpenAI score & review the draft"),
+    ("research_recovery", "Targeted Research", "Search specific evidence gaps within a bounded budget"),
     ("revision", "Writer Revision", "Reflection loop → final report"),
     ("export", "Export", "Save Markdown + PDF"),
 ]
@@ -31,6 +32,7 @@ STEP_KEYS = {
     "reader": ["reader_summary"],
     "writer": ["report"],
     "critic": ["feedback"],
+    "research_recovery": ["targeted_queries_attempted", "recovery_metrics"],
     "revision": ["final_report"],
     "export": ["output_paths"],
 }
@@ -60,6 +62,7 @@ def _init_state() -> None:
         "active_step": None,
         "pipeline_requested": False,
         "metrics_summary": "",
+        "checkpoint_resumed": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -161,6 +164,18 @@ def _render_step_output(node_id: str, state: dict) -> None:
         if critique:
             st.metric("Research quality score", f"{critique.get('overall_score', 0)}/10")
 
+    elif node_id == "research_recovery":
+        metrics = state.get("recovery_metrics") or {}
+        st.caption(
+            f"Round {state.get('research_rounds', 0)} · "
+            f"{metrics.get('newly_accepted_sources', 0)} new sources · "
+            f"{metrics.get('accepted_evidence', 0)} valid evidence excerpts"
+        )
+        for query in state.get("targeted_queries_attempted", []):
+            st.markdown(f"- {query}")
+        for issue in state.get("unresolved_issues", []):
+            st.warning(issue)
+
     elif node_id == "revision":
         final = state.get("final_report") or "—"
         st.markdown(final)
@@ -200,12 +215,18 @@ def _render_step_output(node_id: str, state: dict) -> None:
 def run_pipeline(topic: str, *, resume: bool = True) -> None:
     """Stream LangGraph nodes and update the UI after each step."""
     from cache import load_initial_state
-    from graph import MAX_REVISION_ITERATIONS, research_graph
+    from graph import MAX_RESEARCH_ROUNDS, MAX_REVISION_ITERATIONS, research_graph
     from llm_retry import LLMRequestError
     from metrics import get_metrics, reset_metrics
 
     reset_metrics()
-    initial = load_initial_state(topic) if resume else {"topic": topic}
+    if resume:
+        initial = load_initial_state(topic)
+    else:
+        from cache import clear_checkpoint
+        clear_checkpoint(topic)
+        initial = {"topic": topic}
+    st.session_state.checkpoint_resumed = bool(initial.keys() - {"topic"})
 
     st.session_state.running = True
     st.session_state.topic = topic
@@ -214,6 +235,7 @@ def run_pipeline(topic: str, *, resume: bool = True) -> None:
     st.session_state.error = None
     st.session_state.active_step = "search"
     st.session_state.metrics_summary = ""
+    st.session_state.checkpoint_resumed = False
 
     progress = st.progress(0, text="Starting pipeline…")
     status = st.empty()
@@ -222,7 +244,7 @@ def run_pipeline(topic: str, *, resume: bool = True) -> None:
     try:
         # The critic can run after each revision, so reserve progress for the
         # bounded revision loop as well as the linear path.
-        total = len(PIPELINE_STEPS) + MAX_REVISION_ITERATIONS + 1
+        total = 5 + 3 * MAX_RESEARCH_ROUNDS + 2 * MAX_REVISION_ITERATIONS
         for i, event in enumerate(research_graph.stream(initial), start=1):
             node_id, partial = next(iter(event.items()))
             st.session_state.pipeline_state.update(partial or {})
@@ -233,11 +255,14 @@ def run_pipeline(topic: str, *, resume: bool = True) -> None:
             if node_id == "revision":
                 next_step = "critic"
             elif node_id == "critic":
-                can_revise = (
-                    st.session_state.pipeline_state.get("needs_revision", False)
-                    and st.session_state.pipeline_state.get("revision_count", 0) < MAX_REVISION_ITERATIONS
-                )
-                next_step = "revision" if can_revise else "export"
+                route = st.session_state.pipeline_state.get("quality_route")
+                next_step = {
+                    "research": "research_recovery",
+                    "revision": "revision",
+                    "approved": "export",
+                }.get(route, "export")
+            elif node_id == "research_recovery":
+                next_step = "writer" if st.session_state.pipeline_state.get("recovery_progress") else "export"
             else:
                 order = [step[0] for step in PIPELINE_STEPS]
                 next_step = order[order.index(node_id) + 1] if node_id in order and order.index(node_id) + 1 < len(order) else None
@@ -327,7 +352,8 @@ with st.sidebar:
 
 st.title("Multi-Agent Research Assistant")
 st.markdown(
-    "Enter a topic to run the full pipeline: **Search → Reader → Writer → Critic → Revision → Export**."
+    "Enter a topic to run the full pipeline: **Search → Reader → Writer → Critic → "
+    "Targeted Research or Revision → Export**."
 )
 
 topic = st.text_input(
@@ -400,21 +426,36 @@ if completed or st.session_state.running:
 
     if st.session_state.metrics_summary:
         st.caption(f"Metrics: {st.session_state.metrics_summary}")
+        if st.session_state.get("checkpoint_resumed"):
+            st.caption("Metrics above are for this execution; research quality and evidence may include resumed checkpoint state.")
 
-if completed:
+    if completed:
+        if "export" in completed:
+            st.info(
+                f"Quality: {'APPROVED' if state.get('quality_approved') else 'NOT APPROVED'} · "
+                f"Research rounds: {state.get('research_rounds', 0)} · "
+                f"Revisions: {state.get('revision_count', 0)} · "
+                f"Stopped: {state.get('termination_reason', 'unknown')}"
+            )
+            for issue in state.get("unresolved_issues", []):
+                st.warning(issue)
     st.divider()
     labels = {nid: label for nid, label, _ in PIPELINE_STEPS}
     tab_labels = [labels[n] for n in completed if n in labels]
-    tabs = st.tabs(tab_labels)
+    completed_nodes = [n for n in completed if n in labels]
+    if completed_nodes:
+        tabs = st.tabs(tab_labels)
 
-    for tab, node_id in zip(tabs, [n for n in completed if n in labels]):
-        with tab:
-            desc = next(d for nid, _, d in PIPELINE_STEPS if nid == node_id)
-            st.caption(desc)
-            _render_step_output(node_id, state)
+        for tab, node_id in zip(tabs, completed_nodes):
+            with tab:
+                desc = next(d for nid, _, d in PIPELINE_STEPS if nid == node_id)
+                st.caption(desc)
+                _render_step_output(node_id, state)
+    else:
+        st.info("Pipeline stage results will appear here as stages complete.")
 
     # Final report highlight when fully done
-    if "revision" in completed and state.get("final_report"):
+    if "export" in completed and state.get("final_report"):
         st.divider()
         st.subheader("Final report")
         st.markdown(state["final_report"])

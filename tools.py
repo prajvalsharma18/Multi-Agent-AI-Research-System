@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from langchain.tools import tool
 from tavily import TavilyClient
 
-from cache import get_cached_scrape, get_cached_search, set_cached_scrape, set_cached_search
+from cache import cache_enabled, get_cached_scrape, get_cached_search, set_cached_scrape, set_cached_search
 from metrics import get_metrics
 from source_scoring import MIN_SOURCE_SCORE, canonicalize_url, domain_for_url, score_label, score_source, score_url
 
@@ -135,9 +135,17 @@ def _scrape_single_url(url: str) -> str:
 
     try:
         downloaded = trafilatura.fetch_url(url)
-        if not downloaded:
-            return f"Title: N/A\nURL: {url}\nContent:\nCould not fetch page."
-
+    except Exception:
+        return (
+            f"Title: N/A\nURL: {url}\nContent:\nCould not scrape URL.\n"
+            "Failure category: fetch_exception."
+        )
+    if not downloaded:
+        return (
+            f"Title: N/A\nURL: {url}\nContent:\nCould not fetch page.\n"
+            "Failure category: fetch_empty."
+        )
+    try:
         text = trafilatura.extract(
             downloaded,
             include_comments=False,
@@ -147,17 +155,27 @@ def _scrape_single_url(url: str) -> str:
         )
         metadata = trafilatura.extract_metadata(downloaded)
         title = metadata.title if metadata and metadata.title else "N/A"
-
         if not text or len(text.strip()) < 50:
-            return f"Title: {title}\nURL: {url}\nContent:\nCould not extract article body."
+            return (
+                f"Title: {title}\nURL: {url}\nContent:\nCould not extract article body.\n"
+                "Failure category: extraction_empty_or_short."
+            )
 
         content = _clean_extracted_text(text.strip())[:MAX_SCRAPE_CHARS]
+        if not content:
+            return (
+                f"Title: {title}\nURL: {url}\nContent:\nCould not extract article body.\n"
+                "Failure category: extraction_empty_after_cleaning."
+            )
         result = f"Title: {title}\nURL: {url}\nContent:\n{content}"
         set_cached_scrape(url, result)
         return result
 
-    except Exception as e:
-        return f"Title: N/A\nURL: {url}\nContent:\nCould not scrape URL.\nReason: {e}"
+    except Exception:
+        return (
+            f"Title: N/A\nURL: {url}\nContent:\nCould not scrape URL.\n"
+            "Failure category: extraction_exception."
+        )
 
 
 @tool(return_direct=True)
@@ -168,7 +186,8 @@ def web_search(query: str) -> str:
         get_metrics().log_cache_hit("tavily_search")
         return cached
 
-    get_metrics().log_cache_miss("tavily_search")
+    if cache_enabled():
+        get_metrics().log_cache_miss("tavily_search")
 
     try:
         tavily = _get_tavily_client()
@@ -215,14 +234,21 @@ def scrape_urls_parallel(urls: list[str], max_workers: int = MAX_PARALLEL_SCRAPE
             url = futures[future]
             try:
                 results.append(future.result())
-            except Exception as exc:
+            except Exception:
                 results.append(
-                    f"Title: N/A\nURL: {url}\nContent:\nCould not scrape URL.\nReason: {exc}"
+                    f"Title: N/A\nURL: {url}\nContent:\nCould not scrape URL.\n"
+                    "Failure category: worker_exception."
                 )
     return results
 
 
-def rank_sources_from_search(search_text: str, min_score: int = MIN_SOURCE_SCORE, query: str = "") -> list[dict]:
+def rank_sources_from_search(
+    search_text: str,
+    min_score: int = MIN_SOURCE_SCORE,
+    query: str = "",
+    diagnostics: dict | None = None,
+) -> list[dict]:
+    result_blocks = len(re.findall(r"(?m)^Result\s+\d+\s*$", search_text or ""))
     sources = _parse_search_results(search_text)
     if not sources:
         urls = re.findall(r"https?://[^\s\)\]>\"']+", search_text)
@@ -239,11 +265,25 @@ def rank_sources_from_search(search_text: str, min_score: int = MIN_SOURCE_SCORE
                 })
 
     unique = {}
+    duplicate_candidates = 0
+    invalid_url_candidates = 0
+    candidate_decisions: list[dict] = []
+    if result_blocks:
+        blocks = re.split(r"-{10,}", search_text)
+        for block in blocks:
+            if re.search(r"(?m)^Result\s+\d+\s*$", block) and not canonicalize_url(_field(block, "URL") or ""):
+                invalid_url_candidates += 1
     for source in sources:
         key = canonicalize_url(source["url"])
-        if key and key not in unique:
-            source["url"] = key
-            unique[key] = source
+        if not key:
+            if not result_blocks:
+                invalid_url_candidates += 1
+            continue
+        if key in unique:
+            duplicate_candidates += 1
+            continue
+        source["url"] = key
+        unique[key] = source
     ranked = []
     seen_domains = set()
     for source in sorted(unique.values(), key=lambda s: score_url(s["url"]), reverse=True):
@@ -253,7 +293,40 @@ def rank_sources_from_search(search_text: str, min_score: int = MIN_SOURCE_SCORE
         source.update(domain=domain, score=score, source_score=score, authority_score=authority_score, source_score_breakdown=breakdown, query_used=query)
         # Authority is the acceptance floor. The composite score ranks sources
         # without accidentally excluding independent pages from the same domain.
-        if authority_score >= min_score:
+        accepted = authority_score >= min_score
+        candidate_decisions.append({
+            "url": source["url"],
+            "domain": domain,
+            "authority_score": authority_score,
+            "relevance_score": breakdown["relevance"],
+            "composite_score": score,
+            "accepted": accepted,
+            "rejection_reason": None if accepted else "authority_below_minimum",
+        })
+        if accepted:
             ranked.append(source)
             seen_domains.add(domain)
-    return sorted(ranked, key=lambda item: item["score"], reverse=True)
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    if diagnostics is not None:
+        reported_candidates = result_blocks or len(sources)
+        accepted_count = sum(item["accepted"] for item in candidate_decisions)
+        diagnostics.update({
+            "results_returned": result_blocks,
+            "parsed_candidates": len(sources),
+            "unique_candidates": len(unique),
+            "invalid_url_candidates": invalid_url_candidates,
+            "duplicate_candidates": duplicate_candidates,
+            "accepted_sources": accepted_count,
+            "source_scoring_rejections": len(candidate_decisions) - accepted_count,
+            "outcome": (
+                "zero_results"
+                if result_blocks == 0 and reported_candidates == 0
+                else "all_candidates_rejected"
+                if candidate_decisions and accepted_count == 0
+                else "sources_accepted"
+                if accepted_count
+                else "no_parseable_candidates"
+            ),
+            "candidate_decisions": candidate_decisions,
+        })
+    return ranked

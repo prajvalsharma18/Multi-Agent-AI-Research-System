@@ -120,7 +120,7 @@ def test_writer_node_uses_topic_and_research_state(monkeypatch):
 def test_critic_node_approves_report_and_sets_final_report(monkeypatch):
     import graph
 
-    feedback = "Revision Required: NO"
+    feedback = "Score: 9/10\nRevision Required: NO"
     monkeypatch.setattr(graph, "_cached_llm", lambda stage, key, fn: feedback)
     monkeypatch.setattr(graph, "_save_stage", lambda *args: None)
     result = graph.critic_node({"topic": "health", "report": "report body"})
@@ -143,6 +143,8 @@ def test_critic_deterministic_quality_gate_overrides_model_approval(monkeypatch)
         },
     })
     assert result["needs_revision"] is True
+    assert result["quality_route"] == "research"
+    assert result["quality_approved"] is False
     assert "final_report" not in result
     assert result["critique"]["overall_score"] <= 5
 

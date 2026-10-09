@@ -1,5 +1,5 @@
 from research_models import Claim
-from research_quality import (calculate_domain_diversity, materialize_citations,
+from research_quality import (calculate_domain_diversity, calculate_evidence_metrics, materialize_citations,
     parse_documents, parse_extraction, quality_gate, validate_extraction)
 from source_scoring import canonicalize_url, domain_for_url, score_source
 
@@ -31,12 +31,71 @@ def test_document_evidence_traceability_and_claim_support():
     assert len(notes) == 3
 
 
+def test_parse_extraction_diagnostics_distinguish_failure_boundaries():
+    for raw, expected_status in (
+        ("not json", "malformed_json"),
+        ('{"evidence": "not a list"}', "schema_invalid"),
+        ('{"evidence": [], "claims": []}', "empty_extraction"),
+        ('{"evidence": [], "claims": [{"claim_text": "x"}]}', "parsed"),
+    ):
+        diagnostics = {}
+        parse_extraction(raw, diagnostics)
+        assert diagnostics["status"] == expected_status
+
+
 def test_diversity_distinguishes_single_authority_and_low_authority_reuse():
     high = [{"url": "https://who.int/a", "score": 8.5, "authority_score": 10}]
     low = [{"url": "https://medium.com/a", "score": 5}, {"url": "https://medium.com/b", "score": 5}]
     assert calculate_domain_diversity(high)["classification"] == "single_authoritative_source"
     metrics = calculate_domain_diversity(low)
     assert metrics["classification"] == "single_domain_reuse" and metrics["diversity_ratio"] == .5
+
+
+def test_quality_gate_uses_sources_that_support_claims_not_unused_candidates():
+    sources = [
+        {"url": "https://redis.io/docs/guide", "authority_score": 9, "score": 8},
+        {"url": "https://docs.python.org/guide", "authority_score": 10, "score": 9},
+        {"url": "https://who.int/report", "authority_score": 10, "score": 9},
+    ]
+    claims = [
+        Claim(
+            claim_id="C1",
+            claim_text="Redis stores frequently requested values in memory.",
+            evidence_ids=["E1"],
+            source_urls=["https://redis.io/docs/guide"],
+            confidence=.9,
+        )
+    ]
+
+    metrics = calculate_domain_diversity(sources, claims)
+    gate = quality_gate(
+        metrics,
+        {"total_claims": 1, "evidence_coverage": 1},
+        {"citation_coverage": 1, "invalid_citations": 0},
+    )
+
+    assert metrics["unique_domains"] == 3
+    assert metrics["evidence_sources"]["unique_domains"] == 1
+    assert metrics["evidence_sources"]["urls"] == ["https://redis.io/docs/guide"]
+    assert gate["research_gaps"] == []
+
+
+def test_empty_research_denominators_remain_unmeasured():
+    source_metrics = calculate_domain_diversity([])
+    _, _, citation_metrics = materialize_citations("", [], [])
+    evidence_metrics = calculate_evidence_metrics([], [], {})
+
+    assert source_metrics["total_sources"] == 0
+    assert source_metrics["diversity_ratio"] is None
+    assert source_metrics["average_source_quality"] is None
+    assert source_metrics["average_authority_score"] is None
+    assert source_metrics["authoritative_source_ratio"] is None
+    assert source_metrics["duplicate_source_ratio"] is None
+    assert citation_metrics["total_claims"] == 0
+    assert citation_metrics["citation_coverage"] is None
+    assert evidence_metrics["total_claims"] == 0
+    assert evidence_metrics["evidence_coverage"] is None
+    assert evidence_metrics["average_claim_confidence"] is None
 
 
 def test_citation_materialization_and_quality_gate():
@@ -155,6 +214,6 @@ def test_empty_citation_mapping_removes_model_authored_urls():
     assert "https://fake.example/path" not in report
     assert "[unmapped citation removed]" not in report
     assert citation_map == {}
-    assert metrics["citation_coverage"] == 0
+    assert metrics["citation_coverage"] is None
     assert metrics["invalid_citations"] == 1
     assert "No validated sources were cited." in report

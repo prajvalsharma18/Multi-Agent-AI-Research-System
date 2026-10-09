@@ -124,7 +124,13 @@ Before evaluating:
 5. Never invent content that is not in the report.
 
 Assess claim support, citation mapping, source quality, independent domain diversity, contradictions, completeness, then prose. A single lower-authority domain reused for claims is a substantive evidence defect; one genuinely authoritative source by itself is not.
-Revision Required must be YES for important unsupported factual claims, missing or wrong citations, fabricated URLs, or material evidence gaps. Prose quality cannot compensate for weak evidence."""
+Revision Required must be YES for important unsupported factual claims, missing or wrong citations, fabricated URLs, or material evidence gaps. Prose quality cannot compensate for weak evidence.
+
+End your review with these machine-readable sections, each using one concise bullet per issue or "- None":
+Research Gaps:
+Writing Issues:
+Targeted Queries:
+Targeted queries must address specific research gaps, not repeat the broad original topic."""
 
 SUMMARIZER_SYSTEM_PROMPT = """Extract source-grounded research evidence from the scraped pages.
 Return ONLY valid JSON with keys evidence and claims. Evidence objects have source_url (copied exactly), excerpt (verbatim text from page), supporting_text, relevance_score and confidence from 0 to 1, and optional location. Claims have claim_text, evidence_indices (zero-based indices into evidence), confidence and importance from 0 to 1. Use only verifiable excerpts; do not invent URLs or facts. Include unsupported claims only with an empty evidence_indices list. Keep the evidence concise."""

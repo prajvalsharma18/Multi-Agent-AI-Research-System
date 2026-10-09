@@ -21,6 +21,28 @@ def test_disabled_stage_cache_is_noop(monkeypatch):
     assert cache.get_stage_cache("writer", "key") is None
 
 
+def test_disabled_search_and_scrape_caches_are_noops(monkeypatch, tmp_path):
+    monkeypatch.setenv("PIPELINE_CACHE_ENABLED", "false")
+    monkeypatch.setattr(cache, "SEARCH_CACHE_DIR", tmp_path / "search")
+    monkeypatch.setattr(cache, "SCRAPE_CACHE_DIR", tmp_path / "scrape")
+
+    cache.set_cached_search("query", "cached search")
+    cache.set_cached_scrape("https://example.org/page", "cached scrape")
+
+    assert cache.get_cached_search("query") is None
+    assert cache.get_cached_scrape("https://example.org/page") is None
+    assert not (tmp_path / "search").exists()
+    assert not (tmp_path / "scrape").exists()
+
+
+def test_search_and_scrape_cache_round_trip_when_enabled():
+    cache.set_cached_search("focused query", "search output")
+    cache.set_cached_scrape("https://example.org/page", "fetched document")
+
+    assert cache.get_cached_search("focused query") == "search output"
+    assert cache.get_cached_scrape("https://example.org/page") == "fetched document"
+
+
 def test_corrupted_json_is_a_cache_miss():
     path = cache.STAGE_CACHE_DIR / "writer" / f"{cache._hash_key('key')}.json"
     path.parent.mkdir(parents=True)

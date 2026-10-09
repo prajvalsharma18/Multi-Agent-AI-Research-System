@@ -35,3 +35,25 @@ def test_pipeline_contains_graph_failure(monkeypatch):
     monkeypatch.setattr("cache.load_initial_state", lambda topic: {"topic": topic})
     result = pipeline.run_research_pipeline("topic")
     assert result["error"] == "node failed"
+
+
+def test_metrics_do_not_leak_between_pipeline_runs(monkeypatch):
+    import graph
+    import metrics
+
+    starts = []
+
+    def invoke(state):
+        current = metrics.get_metrics()
+        starts.append(current.scrape_calls)
+        current.log_scrape()
+        return state
+
+    monkeypatch.setattr(graph, "research_graph", type("FakeGraph", (), {"invoke": staticmethod(invoke)})())
+    monkeypatch.setattr("cache.load_initial_state", lambda topic: {"topic": topic})
+
+    pipeline.run_research_pipeline("first")
+    pipeline.run_research_pipeline("second")
+
+    assert starts == [0, 0]
+    assert metrics.get_metrics().scrape_calls == 1

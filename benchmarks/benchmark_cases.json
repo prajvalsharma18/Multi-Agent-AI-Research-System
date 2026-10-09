@@ -1,0 +1,126 @@
+{
+  "benchmark_version": "1.0.0",
+  "evaluation_date": "2026-10-09",
+  "cases": [
+    {
+      "id": "redis-caching",
+      "question": "What is Redis caching, how does it reduce application latency, and what are its limitations?",
+      "category": "backend-caching",
+      "expected_source_characteristics": ["official Redis documentation", "independent operational or academic corroboration"],
+      "minimum_unique_urls": 2,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Qualify claims and remain unapproved when material claims lack validated evidence or independent corroboration.",
+      "evaluation_notes": "A single authoritative Redis page is not independent corroboration."
+    },
+    {
+      "id": "postgresql-mongodb-tradeoffs",
+      "question": "Compare PostgreSQL and MongoDB data modeling and transaction trade-offs for a multi-tenant SaaS application.",
+      "category": "technical-comparison",
+      "expected_source_characteristics": ["official PostgreSQL documentation", "official MongoDB documentation", "sources discussing workload-dependent trade-offs"],
+      "minimum_unique_urls": 2,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Describe trade-offs conditionally and avoid declaring a universal winner when evidence is incomplete.",
+      "evaluation_notes": "Official vendor documentation explains product behavior but may not independently establish comparative performance."
+    },
+    {
+      "id": "http-cache-controls",
+      "question": "How do HTTP Cache-Control directives affect browser and shared-proxy caching, and what security risks should developers consider?",
+      "category": "web-standards",
+      "expected_source_characteristics": ["IETF RFC or standards text", "browser or security documentation"],
+      "minimum_unique_urls": 2,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Distinguish normative protocol behavior from implementation-specific behavior; qualify unsupported security claims.",
+      "evaluation_notes": "The request contains protocol and security subquestions."
+    },
+    {
+      "id": "webauthn-phishing-resistance",
+      "question": "What phishing resistance does WebAuthn provide, what attack paths remain, and how do current NIST guidelines characterize it?",
+      "category": "security-primary-sources",
+      "expected_source_characteristics": ["W3C WebAuthn specification", "NIST digital identity guidance", "independent security analysis"],
+      "minimum_unique_urls": 2,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": true,
+      "freshness_days": 730,
+      "insufficient_evidence_behavior": "Separate specification guarantees from deployment assumptions and report unresolved threat-model limitations.",
+      "evaluation_notes": "Freshness is evaluated relative to the dataset evaluation date; do not assume standards have not changed."
+    },
+    {
+      "id": "http3-performance",
+      "question": "Under what network conditions can HTTP/3 improve or worsen web application performance compared with HTTP/2?",
+      "category": "independent-corroboration",
+      "expected_source_characteristics": ["IETF HTTP/3 and QUIC specifications", "independent measurements or peer-reviewed studies"],
+      "minimum_unique_urls": 3,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Do not generalize benchmark results beyond their measured workloads; identify conflicting evidence.",
+      "evaluation_notes": "Independent evidence matters because performance depends on workload and network conditions."
+    },
+    {
+      "id": "python-supported-versions",
+      "question": "Which Python versions are currently supported by the Python core team, and what evidence establishes the support dates?",
+      "category": "time-sensitive",
+      "expected_source_characteristics": ["official Python release schedule", "official version status metadata"],
+      "minimum_unique_urls": 2,
+      "minimum_unique_domains": 1,
+      "fresh_information_required": true,
+      "freshness_days": 90,
+      "insufficient_evidence_behavior": "State the observation date and mark support status as uncertain if current authoritative dates are unavailable.",
+      "evaluation_notes": "Freshness target is 90 days as of 2026-10-09; this case is not validly evaluated from stale cached results."
+    },
+    {
+      "id": "cap-consistency-nuance",
+      "question": "How should the CAP theorem be interpreted for modern distributed databases, and how do consistency and availability trade-offs depend on network partitions?",
+      "category": "nuanced-evidence",
+      "expected_source_characteristics": ["foundational or peer-reviewed distributed-systems sources", "official database consistency documentation"],
+      "minimum_unique_urls": 2,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Present definitions and assumptions explicitly; do not reduce CAP to a simplistic always-two-of-three slogan.",
+      "evaluation_notes": "Look for careful distinctions between normal operation and partition conditions."
+    },
+    {
+      "id": "single-domain-diversity",
+      "question": "What operational failure modes affect Redis high availability, and how do Sentinel and Cluster address them?",
+      "category": "source-diversity",
+      "expected_source_characteristics": ["Redis primary documentation", "independent operations or incident analysis"],
+      "minimum_unique_urls": 3,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Multiple URLs from redis.io alone do not satisfy independent corroboration; preserve that limitation in the report.",
+      "evaluation_notes": "Tests that URL diversity is not confused with domain/source independence."
+    },
+    {
+      "id": "unverifiable-proprietary-claim",
+      "question": "What exact undocumented algorithm and measured performance does the private, unreleased Acme HyperCache product use?",
+      "category": "insufficient-evidence",
+      "expected_source_characteristics": ["No public authoritative source is expected; credible disclosure or primary documentation would be required."],
+      "minimum_unique_urls": 1,
+      "minimum_unique_domains": 1,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Reject or explicitly qualify unsupported product details; never invent an algorithm, benchmark, or citation.",
+      "evaluation_notes": "This is a negative control, not an assertion that a real product or public evidence exists."
+    },
+    {
+      "id": "idempotency-subquestions",
+      "question": "How can idempotency keys prevent duplicate payment processing, how should they be stored, and what failure cases remain across retries?",
+      "category": "multi-part-backend-reliability",
+      "expected_source_characteristics": ["payment API primary documentation", "distributed-systems reliability guidance", "independent implementation discussion"],
+      "minimum_unique_urls": 3,
+      "minimum_unique_domains": 2,
+      "fresh_information_required": false,
+      "freshness_days": null,
+      "insufficient_evidence_behavior": "Cover key uniqueness, atomicity, expiry/replay handling, and unresolved race conditions; do not assert exactly-once processing without support.",
+      "evaluation_notes": "The question deliberately separates key semantics, persistence, and retry/failure behavior."
+    }
+  ]
+}

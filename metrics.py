@@ -8,12 +8,21 @@ from dataclasses import dataclass, field
 
 @dataclass
 class PipelineMetrics:
+    """Per-run counters for instrumented stages.
+
+    Hits include checkpoint, node/stage-cache, and Tavily-cache reuse. Misses
+    count only enabled lookups explicitly instrumented by the LLM/search stages;
+    scraper-cache lookups are not currently counted.
+    """
+
     openai_calls: int = 0
     retries: int = 0
     failures: int = 0
     cache_hits: int = 0
     cache_misses: int = 0
     scrape_calls: int = 0
+    initial_searches: int = 0
+    recovery_searches: int = 0
     openai_stages: list[str] = field(default_factory=list)
     models: list[str] = field(default_factory=list)
     cache_hit_stages: list[str] = field(default_factory=list)
@@ -38,6 +47,12 @@ class PipelineMetrics:
     def log_scrape(self, count: int = 1) -> None:
         self.scrape_calls += count
 
+    def log_search(self, *, recovery: bool) -> None:
+        if recovery:
+            self.recovery_searches += 1
+        else:
+            self.initial_searches += 1
+
     @property
     def elapsed_seconds(self) -> float:
         return time.perf_counter() - self._start_time
@@ -50,7 +65,9 @@ class PipelineMetrics:
             f"OpenAI calls this run: {self.openai_calls} [{stages}] | "
             f"Models: {models} | "
             f"Retries: {self.retries} | Failures: {self.failures} | "
-            f"Cache hits: {self.cache_hits} [{hits}] | "
+            f"Cache/checkpoint hits: {self.cache_hits} [{hits}] | "
+            f"Enabled-cache misses: {self.cache_misses} | "
+            f"Searches: {self.initial_searches} initial / {self.recovery_searches} recovery | "
             f"Scrapes: {self.scrape_calls} | "
             f"Quality: {self.quality} | "
             f"Time: {self.elapsed_seconds:.1f}s"
